@@ -26,7 +26,7 @@ type Bridge struct {
 	log     *slog.Logger
 
 	// OnBrowserPCM is invoked with decoded 16 kHz mono PCM captured from the browser mic.
-	OnBrowserPCM func(pcm []float32)
+	OnBrowserPCM   func(pcm []float32)
 	OnBrowserVideo func(au []byte)
 	// OnTerminalICE fires when the peer connection fails or closes.
 	OnTerminalICE func()
