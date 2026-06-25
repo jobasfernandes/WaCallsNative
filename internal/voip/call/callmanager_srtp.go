@@ -42,6 +42,12 @@ func (m *CallManager) initSrtpKeysLocked() {
 	}
 	m.srtpSession = sess
 	m.log.Debug("srtp per-jid keys set", "send", ourDeviceJid, "recv", peerDeviceJid)
+
+	if m.currentCall != nil && m.currentCall.MediaType == core.CallMediaTypeVideo {
+		if err := m.video.Setup(m.currentCall.CallID, ourDeviceJid, peerDeviceJid, sendKM, recvKM); err != nil {
+			m.log.Error("video setup failed", "err", err)
+		}
+	}
 }
 
 func (m *CallManager) reinitSrtpLocked(peerKey []byte, peerJid types.JID) {

@@ -60,7 +60,7 @@ func (s *Session) wireCall(cm *call.CallManager, callID string) {
 			SessionID: s.id, CallID: c.CallID, Direction: "inbound", Peer: c.PeerJid,
 			StartedAt: time.Now().UnixMilli(), Status: StatusRinging,
 		})
-		s.mgr.broker.emitIncoming(s.id, c.CallID, c.PeerJid)
+		s.mgr.broker.emitIncoming(s.id, c.CallID, c.PeerJid, c.MediaType == core.CallMediaTypeVideo)
 	}
 	cm.OnStateChange = func(c *call.CallInfo) {
 		if c.IsEnded() {
@@ -93,6 +93,13 @@ func (s *Session) wireCall(cm *call.CallManager, callID string) {
 			return
 		}
 		_ = ac.bridge.WritePCM(pcm16)
+	}
+	cm.OnPeerVideo = func(au []byte) {
+		ac, ok := s.reg.get(callID)
+		if !ok || ac.bridge == nil {
+			return
+		}
+		_ = ac.bridge.WriteVideo(au)
 	}
 }
 
