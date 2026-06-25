@@ -1,0 +1,20 @@
+services:
+  wacalls:
+    build:
+      context: .
+      args:
+        VERSION: ${VERSION:-docker}
+    image: ghcr.io/jotadev66/wacalls:latest
+    container_name: wacalls
+    restart: unless-stopped
+    ports:
+      - "${HTTP_PORT:-8080}:8080"
+      - "${WEBRTC_UDP_PORT:-7881}:${WEBRTC_UDP_PORT:-7881}/udp"
+    environment:
+      WACALLS_PUBLIC_IP: ${WACALLS_PUBLIC_IP:-}
+      WACALLS_WEBRTC_UDP_PORT: ${WEBRTC_UDP_PORT:-7881}
+    volumes:
+      - wacalls-data:/data
+
+volumes:
+  wacalls-data:
