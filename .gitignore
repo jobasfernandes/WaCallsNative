@@ -17,6 +17,9 @@ client/node_modules/
 client/dist/
 client/.vite/
 client/*.tsbuildinfo
+.env
+.env.*
+!.env.example
 node_modules/
 npm-debug.log*
 yarn-error.log*

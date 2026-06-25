@@ -159,6 +159,11 @@ cd client
 npm run dev      # Vite on :5173, proxies /api → http://localhost:8080
 ```
 
+The proxy target defaults to `http://localhost:8080` (the server's default
+`-addr`), so dev mode works with no extra config. If you run the server on a
+different host or port, copy `client/.env.example` to `client/.env` and set
+`VITE_API_PROXY_TARGET` to match.
+
 For production, build the static client and serve it from the Go server:
 
 ```bash
