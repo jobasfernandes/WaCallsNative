@@ -1,5 +1,6 @@
 import { apiPost } from "./api";
 import { float32ToInt16LE, int16LEToFloat32 } from "./pcm";
+import { VideoReceiver, VideoSender, videoSupported } from "./video-codec";
 import {
   CAPTURE_PROCESSOR_NAME,
   CAPTURE_WORKLET_URL,
@@ -8,11 +9,24 @@ import {
   PLAYBACK_WORKLET_URL,
   SAMPLE_RATE,
 } from "../constants/audio";
+import {
+  H264_CHANNEL_LABEL,
+  VIDEO_FPS,
+  VIDEO_HEIGHT,
+  VIDEO_WIDTH,
+} from "../constants/video";
+
+export type OpenCallOptions = {
+  video?: boolean;
+  camDeviceId?: string | null;
+};
 
 export type OpenCall = {
   pc: RTCPeerConnection;
   micStream: MediaStream;
   remoteStream: MediaStream | null;
+  localVideoStream: MediaStream | null;
+  remoteVideoStream: MediaStream | null;
   close: () => void;
 };
 
@@ -20,9 +34,23 @@ export const openCall = async (
   sid: string,
   callId: string,
   micDeviceId: string | null,
+  opts: OpenCallOptions = {},
 ): Promise<OpenCall> => {
-  const micStream = await navigator.mediaDevices.getUserMedia({
+  const wantVideo = !!opts.video && videoSupported();
+  if (opts.video && !wantVideo) {
+    console.warn("video requested but WebCodecs/insertable-streams unsupported; audio only");
+  }
+
+  const localStream = await navigator.mediaDevices.getUserMedia({
     audio: micDeviceId ? { deviceId: { exact: micDeviceId } } : true,
+    video: wantVideo
+      ? {
+          deviceId: opts.camDeviceId ? { exact: opts.camDeviceId } : undefined,
+          width: { ideal: VIDEO_WIDTH },
+          height: { ideal: VIDEO_HEIGHT },
+          frameRate: { ideal: VIDEO_FPS },
+        }
+      : false,
   });
 
   const pc = new RTCPeerConnection({ iceServers: [] });
@@ -35,7 +63,7 @@ export const openCall = async (
   await ctx.audioWorklet.addModule(PLAYBACK_WORKLET_URL);
   await ctx.resume();
 
-  const micSource = ctx.createMediaStreamSource(micStream);
+  const micSource = ctx.createMediaStreamSource(localStream);
   const captureNode = new AudioWorkletNode(ctx, CAPTURE_PROCESSOR_NAME);
   captureNode.port.onmessage = (e: MessageEvent<Float32Array>) => {
     if (dc.readyState === "open") dc.send(float32ToInt16LE(e.data));
@@ -49,6 +77,27 @@ export const openCall = async (
   dc.onmessage = (e: MessageEvent<ArrayBuffer>) => {
     playbackNode.port.postMessage(int16LEToFloat32(e.data));
   };
+
+  let videoSender: VideoSender | null = null;
+  let videoReceiver: VideoReceiver | null = null;
+  let localVideoStream: MediaStream | null = null;
+  let remoteVideoStream: MediaStream | null = null;
+  if (wantVideo) {
+    const camTrack = localStream.getVideoTracks()[0];
+    if (camTrack) {
+      localVideoStream = new MediaStream([camTrack]);
+      const videoDc = pc.createDataChannel(H264_CHANNEL_LABEL, { ordered: false, maxRetransmits: 0 });
+      videoDc.binaryType = "arraybuffer";
+      videoReceiver = new VideoReceiver();
+      remoteVideoStream = videoReceiver.stream;
+      videoDc.onmessage = (e: MessageEvent<ArrayBuffer>) => videoReceiver?.decode(e.data);
+      videoDc.onopen = () => {
+        videoSender = new VideoSender(camTrack, (au) => {
+          if (videoDc.readyState === "open") videoDc.send(au);
+        });
+      };
+    }
+  }
 
   const offer = await pc.createOffer();
   await pc.setLocalDescription(offer);
@@ -68,11 +117,19 @@ export const openCall = async (
 
   return {
     pc,
-    micStream,
+    micStream: localStream,
     remoteStream: streamDest.stream,
+    localVideoStream,
+    remoteVideoStream,
     close: () => {
       try {
-        micStream.getTracks().forEach((t) => t.stop());
+        videoSender?.close();
+      } catch {}
+      try {
+        videoReceiver?.close();
+      } catch {}
+      try {
+        localStream.getTracks().forEach((t) => t.stop());
       } catch {}
       try {
         ctx.close();

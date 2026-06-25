@@ -286,6 +286,17 @@ func (d *RangeDecoder) Decode64FineSym() int32 {
 	return int32(sym)
 }
 
+// BytesConsumed reports how many of the body bytes have been touched: front
+// range-coded bytes plus back raw-bit bytes. When a frame is fully decoded this
+// approaches the body length; a large shortfall means there is undecoded data
+// left (e.g. a 120 ms frame decoded as only its first 3 internal frames).
+func (d *RangeDecoder) BytesConsumed() int {
+	return int(d.offs) + int(d.endOffs)
+}
+
+// BodyLen is the total body length the decoder was given.
+func (d *RangeDecoder) BodyLen() int { return int(d.storage) }
+
 // Tell reports the number of bits consumed so far, rounded up.
 func (d *RangeDecoder) Tell() int32 {
 	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/674e85164b35ca19115dfebcf605708d15951ee7/wacore/src/voip/mlow/rangecoder.rs#L289-L291

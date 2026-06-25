@@ -30,6 +30,21 @@ type MlowDecoder struct {
 	state      *SmplDecoderState
 	redundancy int32
 	log        zerolog.Logger
+
+	// Diagnostic: body length / bytes consumed by the last active-frame decode, and
+	// the RED-detection outcome for the last packet.
+	lastBodyLen   int
+	lastConsumed  int
+	lastWasRed    bool
+	lastRedBlocks int
+	lastMainToc   byte
+}
+
+// LastDecodeStats returns diagnostics for the most recent decode: the active body
+// length and bytes consumed, whether the packet was SplitRed, how many redundant
+// blocks it carried, and the main frame's TOC byte.
+func (d *MlowDecoder) LastDecodeStats() (bodyLen, consumed int, wasRed bool, redBlocks int, mainToc byte) {
+	return d.lastBodyLen, d.lastConsumed, d.lastWasRed, d.lastRedBlocks, d.lastMainToc
 }
 
 // NewMlowDecoder allocates a fresh decoder.
@@ -57,21 +72,68 @@ func (d *MlowDecoder) Decode(payload []byte) []float32 {
 		d.log.Trace().Msg("decode: empty payload, emitting silence")
 		return make([]float32, opusFrameSamps)
 	}
-	d.log.Trace().Int("payload_bytes", len(payload)).Int32("redundancy", d.redundancy).Msg("decode packet")
-	if d.redundancy > 0 {
-		frames, err := DepackSplitRed(payload, d.log)
-		if err != nil {
-			d.log.Debug().Err(err).Int("payload_bytes", len(payload)).Msg("decode: RED depack failed, emitting silence")
-			return make([]float32, opusFrameSamps)
+	d.lastWasRed = false
+	d.lastRedBlocks = 0
+	d.lastMainToc = 0
+	// SplitRed container (observed in video calls with DTX on). WhatsApp wraps the
+	// current frame with redundant copies of previous frames for loss recovery:
+	//
+	//   0x92 <count> [ <len> <redundant frame> ]*(count-1) <main frame>
+	//
+	// The main (current) frame is LAST and is a normal bare MLow frame (TOC 0x50 /
+	// 0x12 / 0x90). Decode only the main; the redundant copies are FEC. Decoding the
+	// raw container as a bare frame range-decodes the count/length/redundancy bytes
+	// as audio → noise (the video-call symptom). This is a different layout from
+	// red.go's DepackSplitRed (note the extra count byte), so it's parsed here.
+	if subs, ok := splitContainer(payload); ok {
+		d.lastWasRed = true
+		d.lastRedBlocks = len(subs) - 1
+		d.lastMainToc = subs[len(subs)-1][0]
+		// Each sub-frame is a sequential 60 ms span (NOT redundancy): the container
+		// packs the whole RTP interval (e.g. 2×60 ms = the 120 ms ts_delta) as
+		// length-delimited bare frames. Decode them all in order and concatenate so
+		// the playout matches the timestamp; decoding only the last dropped half the
+		// audio → choppy/stuttering.
+		var out []float32
+		for _, sf := range subs {
+			out = append(out, d.decodeFrame(sf)...)
 		}
-		var main []byte
-		if len(frames) > 0 {
-			main = frames[len(frames)-1].Data // the main (current) frame is last
-		}
-		d.log.Trace().Int("red_frames", len(frames)).Int("main_bytes", len(main)).Msg("decode: RED depacked")
-		return d.decodeFrame(main)
+		return out
 	}
 	return d.decodeFrame(payload)
+}
+
+// splitContainer parses a 0x92 multi-frame container into its sequential
+// sub-frames: 0x92 <count> [ <len> <frame> ]*(count-1) <last frame = rest>.
+// Returns ok=false for anything that isn't a well-formed container so the caller
+// decodes it as a bare frame.
+func splitContainer(p []byte) ([][]byte, bool) {
+	if len(p) < 3 || p[0] != 0x92 {
+		return nil, false
+	}
+	count := int(p[1])
+	if count < 2 || count > 8 {
+		return nil, false
+	}
+	frames := make([][]byte, 0, count)
+	off := 2
+	for i := 0; i < count-1; i++ {
+		if off >= len(p) {
+			return nil, false
+		}
+		flen := int(p[off])
+		off++
+		if off+flen > len(p) {
+			return nil, false
+		}
+		frames = append(frames, p[off:off+flen])
+		off += flen
+	}
+	if off >= len(p) {
+		return nil, false
+	}
+	frames = append(frames, p[off:])
+	return frames, true
 }
 
 func (d *MlowDecoder) decodeFrame(frame []byte) []float32 {
@@ -81,28 +143,38 @@ func (d *MlowDecoder) decodeFrame(frame []byte) []float32 {
 		return make([]float32, opusFrameSamps)
 	}
 	toc := ParseSmplTOC(frame[0], d.log)
-	var outLen int
-	if toc.StdOpus {
-		outLen = 16000 / 1000 * toc.FrameMs
-	} else {
-		outLen = toc.SampleRate / 1000 * toc.FrameMs
+	// Silence length is driven by frame_ms on a 16 kHz basis so the playback clock
+	// stays roughly aligned even for frames we don't decode.
+	outLen := 16000 / 1000 * toc.FrameMs
+	if outLen <= 0 {
+		outLen = opusFrameSamps
 	}
-	d.log.Trace().Int("frame_bytes", len(frame)).Uint8("toc_byte", frame[0]).
-		Bool("std_opus", toc.StdOpus).Bool("sid", toc.SID).Bool("active", toc.Active).
-		Bool("voiced", toc.Voiced).Int("frame_ms", toc.FrameMs).Int("sample_rate", toc.SampleRate).
-		Int("out_len", outLen).Msg("decode frame")
-	if toc.StdOpus {
-		d.log.Debug().Msg("decode frame: standard-Opus packet, not handled, emitting silence")
+	// Operating point: this 1:1 decoder only handles 16 kHz / low_rate=0 / 60 ms
+	// ACTIVE frames. Off-point frames MUST NOT reach decodeActiveFrame: it sizes
+	// the harmonic postfilter for exactly 3 internal (20 ms) frames, so a 120 ms or
+	// 32 kHz TOC makes it emit more samples than the buffer holds and panics
+	// ("slice bounds out of range"). Such frames are unvalidated, so → silence.
+	//
+	// NOTE: we deliberately do NOT gate on toc.SID (bit 7). With DTX/SID enabled,
+	// the peer sets bit 7 on EVERY frame as a stream-level flag, including real
+	// active audio (e.g. TOC 0x92, vad/bit1 set, 200+ byte payloads). The true
+	// silence indicator is !Active (vad==0 && bit1==0): genuine SID/CN frames like
+	// 0x90 are inactive and still fall through to silence. Gating on SID (as the
+	// reference's golden 60 ms capture did, where active frames had bit7=0) would
+	// silence the entire inbound stream once the peer turns DTX on.
+	if toc.StdOpus || !toc.Active || toc.SampleRate != 16000 || toc.Flag2 || toc.FrameMs != 60 {
+		d.log.Debug().Uint8("toc_byte", frame[0]).Bool("std_opus", toc.StdOpus).Bool("sid", toc.SID).
+			Bool("active", toc.Active).Int("frame_ms", toc.FrameMs).Int("sample_rate", toc.SampleRate).
+			Bool("low_rate", toc.Flag2).Msg("decode frame: off operating point or inactive, emitting silence")
 		return make([]float32, outLen)
 	}
-	if toc.SID || !toc.Active {
-		d.log.Trace().Bool("sid", toc.SID).Bool("active", toc.Active).Msg("decode frame: inactive/SID, emitting silence")
-		return make([]float32, outLen)
-	}
-	return d.decodeActiveFrame(frame, outLen)
+	return d.decodeActiveFrame(frame)
 }
 
-func (d *MlowDecoder) decodeActiveFrame(frame []byte, outLen int) []float32 {
+// internalGroupSize is the base number of 20 ms internal frames (60 ms).
+const internalGroupSize = 3
+
+func (d *MlowDecoder) decodeActiveFrame(frame []byte) []float32 {
 	// Source of truth: https://github.com/oxidezap/whatsapp-rust/blob/ed12f359a086b28e807ba236f0977af1000859fe/wacore/src/voip/mlow/decoder.rs#L101-L217
 	config := int(frame[0]>>2) & 1
 	tbl := LoadSmplTables()
@@ -110,13 +182,13 @@ func (d *MlowDecoder) decodeActiveFrame(frame []byte, outLen int) []float32 {
 	mem := LoadSmplMem()
 	dec := NewRangeDecoder(frame[1:])
 	lowRate := (frame[0]>>2)&1 != 0
+	bodyLen := dec.BodyLen()
 
-	d.log.Trace().Int("config", config).Bool("low_rate", lowRate).Int("body_bytes", len(frame)-1).Int("internal_frames", 3).Msg("decode active frame")
-
-	out := make([]float32, 0, 3*SmplIntfLen)
-	packetLags := make([]float32, 0, 3*8)
+	out := make([]float32, 0, 2*internalGroupSize*SmplIntfLen)
+	packetLags := make([]float32, 0, 2*internalGroupSize*8)
 	var avgNormBr float32
-	for f := 0; f < 3; f++ {
+
+	decodeOne := func(f int) {
 		lsf := DecodeSmplLsf(dec, tbl, &d.state.Lstate, config, f)
 		pulses := DecodeSmplPulses(dec, mem, SmplIntfLen, 4, 1, int32(config), lsf.Stage1)
 		voiced := lsf.Stage1 == 1
@@ -148,10 +220,6 @@ func (d *MlowDecoder) decodeActiveFrame(frame []byte, outLen int) []float32 {
 		packetLags = append(packetLags, params.BlockLags[:]...)
 		avgNormBr += SmplGetNormalizedBitrate(params.TotalPulses, SmplIntfLen)
 
-		d.log.Trace().Int("intf", f).Bool("voiced", voiced).Int32("stage1", lsf.Stage1).
-			Int32("grid", lsf.Grid).Int32("total_pulses", total).Int("nlsf_len", len(d.state.PrevNLSF)).
-			Msg("decode internal frame params")
-
 		nlsf := SmplReconstructNLSF(synthT, int(lsf.Stage1), config, int(lsf.Grid), &lsf.Stage2, d.state.PrevNLSF)
 		var sig [SmplIntfLen]float32
 		d.state.Celp.SynthFrame(nlsf, int(lsf.Extra), pulses.Pulses, &params, lowRate, SmplIntfLen, sig[:])
@@ -159,10 +227,26 @@ func (d *MlowDecoder) decodeActiveFrame(frame []byte, outLen int) []float32 {
 		out = append(out, sig[:]...)
 	}
 
+	// Decode exactly the main frame: 3 internal 20 ms frames = 60 ms. Trailing
+	// bytes left in a larger packet are RED redundancy (copies of PREVIOUS frames,
+	// for loss recovery) — NOT more current audio. Decoding them replays old audio
+	// (heard as "the peer keeps sending audio while silent") and desyncs the
+	// cross-frame predictor, so they are intentionally ignored, exactly as the
+	// reference does (fixed 0..3 loop). The DTX silence gaps that make this sound
+	// choppy are reconstructed downstream from the RTP timestamps, not here.
+	const numInternal = internalGroupSize
+	for f := 0; f < numInternal; f++ {
+		decodeOne(f)
+	}
+	d.log.Trace().Int("config", config).Bool("low_rate", lowRate).Int("body_bytes", bodyLen).
+		Int("internal_frames", numInternal).Int("consumed", dec.BytesConsumed()).Msg("decode active frame")
+
+	d.lastBodyLen = bodyLen
+	d.lastConsumed = dec.BytesConsumed()
+
 	// Per-packet harmonic postfilter (final pitch comb + 48-sample group delay) over the whole packet.
 	plen := len(out)
-	d.log.Trace().Int("samples", plen).Int("packet_lags", len(packetLags)).Msg("decode active frame: applying harmonic postfilter")
-	SmplHarmPostfilter(d.state.Harm, out, plen, packetLags, len(packetLags), avgNormBr/3.0)
+	SmplHarmPostfilter(d.state.Harm, out, plen, packetLags, len(packetLags), avgNormBr/float32(numInternal))
 
 	pcm := make([]float32, len(out))
 	for i, v := range out {
@@ -173,15 +257,6 @@ func (d *MlowDecoder) decodeActiveFrame(frame []byte, outLen int) []float32 {
 			v = -1.0
 		}
 		pcm[i] = v
-	}
-	if outLen > 0 && outLen != len(pcm) {
-		if outLen <= len(pcm) {
-			pcm = pcm[:outLen]
-		} else {
-			np := make([]float32, outLen)
-			copy(np, pcm)
-			pcm = np
-		}
 	}
 	return pcm
 }
