@@ -33,7 +33,11 @@ type Bridge struct {
 }
 
 func NewBridge(offerSDP string, log *slog.Logger) (*Bridge, string, error) {
-	pc, err := webrtc.NewPeerConnection(webrtc.Configuration{})
+	api, err := browserWebRTCAPI()
+	if err != nil {
+		return nil, "", err
+	}
+	pc, err := api.NewPeerConnection(webrtc.Configuration{})
 	if err != nil {
 		return nil, "", err
 	}
