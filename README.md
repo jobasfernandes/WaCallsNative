@@ -11,7 +11,7 @@ Built for native VoIP media, multi-account (multi-session) operation, and a mode
 [![pion](https://img.shields.io/badge/pion-WebRTC-FF6B6B)](https://github.com/pion/webrtc)
 [![License](https://img.shields.io/badge/license-MIT-blue.svg)](#license)
 
-[Overview](#overview) · [Architecture](#architecture) · [Quick Start](#quick-start) · [API](#api) · [Security](#security)
+[Overview](#overview) · [Architecture](#architecture) · [Quick Start](#quick-start) · [Docker](#docker) · [API](#api) · [Security](#security)
 
 </div>
 
@@ -175,6 +175,51 @@ go run ./cmd/server -static client/dist -addr :8080
 | `-static` | `client/dist` | Static client directory (optional) |
 | `-debug` | `false` | Verbose logging (includes whatsmeow's internal log) |
 | `-max-calls-per-session` | `8` | Max concurrent calls per session (`0` = unlimited) |
+
+---
+
+## Docker
+
+The server and the React client ship as a single self-contained image — a static
+(`CGO_ENABLED=0`) Go binary plus the built `client/dist` on Alpine, ~30 MB. Images
+are published to **[ghcr.io/jotadev66/wacalls](https://github.com/JotaDev66?tab=packages&repo_name=WaCalls)**.
+
+### Run with Docker Compose
+
+```bash
+cp .env.example .env        # then set WACALLS_PUBLIC_IP
+docker compose up -d        # or: make up
+```
+
+Open `http://<host>:8080`, click **New session**, and scan the QR (also printed in
+`docker compose logs -f`). Sessions persist on the named volume `wacalls-data`.
+
+### WebRTC networking
+
+The browser leg of a call runs over UDP, so the server must advertise an ICE host
+candidate the browser can actually reach. Configure it in `.env`:
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `HTTP_PORT` | `8080` | Host port for the HTTP API + UI |
+| `WEBRTC_UDP_PORT` | `7881` | Fixed UDP port all browser media is funneled through (single mux) |
+| `WACALLS_PUBLIC_IP` | _(empty)_ | IP/host the browser uses to reach the server; published as the host candidate (1:1 NAT) |
+
+On bridge networking set **both** `WACALLS_PUBLIC_IP` and `WEBRTC_UDP_PORT`. The
+UDP port is published 1:1 (`7881:7881/udp`) so the advertised candidate matches the
+reachable port — keep the two sides identical. Leaving the env vars unset falls back
+to ephemeral ports with interface-IP candidates, which only works on host networking
+or a flat LAN. The WhatsApp relay leg is outbound and needs no inbound ports.
+
+### Build locally
+
+```bash
+docker compose build        # or: make build
+docker build -t wacalls .   # plain build
+```
+
+Removing the volume (`make clean` / `docker compose down -v`) unpairs every account,
+since `wacalls.db` holds the WhatsApp session credentials.
 
 ---
 
