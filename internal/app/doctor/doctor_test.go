@@ -10,6 +10,12 @@ import (
 	"wacalls/internal/app/config"
 )
 
+func TestCheckCallInterceptor(t *testing.T) {
+	if got := checkCallInterceptor(); got.status != statusOK {
+		t.Fatalf("interceptor seam must be present on the pinned whatsmeow: %v (%s)", got.status, got.detail)
+	}
+}
+
 func TestCheckUDPPort(t *testing.T) {
 	if got := checkUDPPort(0); got.status != statusInfo {
 		t.Fatalf("port 0: want info, got %v", got.status)

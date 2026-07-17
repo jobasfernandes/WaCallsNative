@@ -85,6 +85,21 @@ func CallInterceptorAvailable(cli *whatsmeow.Client) bool {
 	return err == nil
 }
 
+// CallInterceptorSeamPresent statically reports whether whatsmeow's Client still has the
+// nodeHandlers field with the expected element type, without constructing a client. Used by
+// the doctor to surface a silent degradation to the dual-ack fallback after a whatsmeow bump.
+func CallInterceptorSeamPresent() bool {
+	f, ok := reflect.TypeOf(whatsmeow.Client{}).FieldByName("nodeHandlers")
+	if !ok || f.Type.Kind() != reflect.Map {
+		return false
+	}
+	elem := f.Type.Elem()
+	ctxType := reflect.TypeOf((*context.Context)(nil)).Elem()
+	nodeType := reflect.TypeOf((*waBinary.Node)(nil))
+	return elem.Kind() == reflect.Func && elem.NumIn() == 2 && elem.NumOut() == 0 &&
+		elem.In(0) == ctxType && elem.In(1) == nodeType
+}
+
 func (s *Socket) OwnPN() types.JID { return s.di().GetOwnID() }
 
 func (s *Socket) OwnLID() types.JID { return s.di().GetOwnLID() }

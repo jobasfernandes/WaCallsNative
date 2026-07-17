@@ -9,6 +9,7 @@ import (
 
 	"wacalls/internal/app/config"
 	"wacalls/internal/store"
+	"wacalls/internal/wa"
 )
 
 type checkStatus int
@@ -49,6 +50,7 @@ func Doctor(ctx context.Context, cfg config.Config, w io.Writer) bool {
 		checkPublicIP(cfg.PublicIPs, localIPv4s()),
 		checkExternalIP(cfg.PublicIPs, stunIP, stunServer, stunErr),
 		checkDatabase(ctx, storeConfigFor(cfg)),
+		checkCallInterceptor(),
 		{name: "relays", status: statusInfo, detail: "discovered per call via WhatsApp signaling; not checkable in preflight"},
 	}
 	ok := true
@@ -108,6 +110,14 @@ func checkDatabase(ctx context.Context, cfg store.Config) checkResult {
 	}
 	_ = bundle.Close()
 	return checkResult{name: name, status: statusOK, detail: describeStore(cfg)}
+}
+
+func checkCallInterceptor() checkResult {
+	const name = "video ack interceptor"
+	if wa.CallInterceptorSeamPresent() {
+		return checkResult{name: name, status: statusOK, detail: "raw <call> hook available; video upgrades get a typed ack"}
+	}
+	return checkResult{name: name, status: statusWarn, detail: "whatsmeow internals changed; falling back to dual-ack (video upgrades may be less reliable)"}
 }
 
 func storeConfigFor(cfg config.Config) store.Config {
