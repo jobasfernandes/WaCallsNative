@@ -24,7 +24,27 @@ type CallMediaType string
 
 const (
 	CallMediaTypeAudio CallMediaType = "audio"
+	CallMediaTypeVideo CallMediaType = "video"
 )
+
+const (
+	VideoStateDisabled         = 0
+	VideoStateEnabled          = 1
+	VideoStateUpgradeRequest   = 3
+	VideoStateUpgradeAccept    = 4
+	VideoStateUpgradeReject    = 5
+	VideoStateStopped          = 6
+	VideoStateUpgradeCancel    = 8
+	VideoStateUpgradeRequestV2 = 11
+)
+
+// Pending: "out" while our upgrade awaits the peer, "in" while the peer's awaits us.
+type VideoSnapshot struct {
+	Local       bool
+	Remote      bool
+	Pending     string
+	Orientation int
+}
 
 type EndCallReason string
 
