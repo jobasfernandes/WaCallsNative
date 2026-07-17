@@ -55,10 +55,7 @@ func parseCVORotation(data []byte) int {
 	}
 	extLen := (int(data[off+2])<<8 | int(data[off+3])) * 4
 	start := off + 4
-	end := start + extLen
-	if end > len(data) {
-		end = len(data)
-	}
+	end := min(start+extLen, len(data))
 	ext := data[start:end]
 	for i := 0; i < len(ext); {
 		b := ext[i]
