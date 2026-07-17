@@ -1,12 +1,179 @@
 package signaling
 
 import (
+	"bytes"
+	"context"
 	"testing"
 
 	"wacalls/internal/voip/wanode"
 
+	waBinary "go.mau.fi/whatsmeow/binary"
 	"go.mau.fi/whatsmeow/types"
 )
+
+type buildTestSock struct{}
+
+var _ Socket = buildTestSock{}
+
+func (buildTestSock) OwnPN() types.JID  { return types.NewJID("111", types.DefaultUserServer) }
+func (buildTestSock) OwnLID() types.JID { return types.NewJID("111", types.HiddenUserServer) }
+func (buildTestSock) AccountDeviceIdentityNode() (waBinary.Node, bool) {
+	return waBinary.Node{}, false
+}
+func (buildTestSock) SendNode(ctx context.Context, node waBinary.Node) error { return nil }
+func (buildTestSock) Query(ctx context.Context, node waBinary.Node) (*waBinary.Node, error) {
+	return nil, nil
+}
+func (buildTestSock) GetUSyncDevices(ctx context.Context, jids []types.JID) ([]types.JID, error) {
+	return jids, nil
+}
+func (buildTestSock) AssertSessions(ctx context.Context, jids []types.JID, force bool) error {
+	return nil
+}
+func (buildTestSock) CreateParticipantNodes(ctx context.Context, devices []types.JID, callKey []byte, encAttrs waBinary.Attrs) ([]waBinary.Node, bool, error) {
+	return []waBinary.Node{{Tag: "enc", Attrs: waBinary.Attrs{"v": "2", "type": "msg"}}}, false, nil
+}
+func (buildTestSock) DecryptCallKey(ctx context.Context, from types.JID, encChild *waBinary.Node) ([]byte, error) {
+	return nil, nil
+}
+func (buildTestSock) GetTCToken(ctx context.Context, jid types.JID) ([]byte, error) {
+	return nil, nil
+}
+func (buildTestSock) ResolveLIDForPN(ctx context.Context, pn types.JID) types.JID { return pn }
+
+func offerChildren(t *testing.T, node waBinary.Node) []waBinary.Node {
+	t.Helper()
+	kids := wanode.NodeChildren(&node)
+	if len(kids) != 1 {
+		t.Fatalf("wrapper children = %d, want 1", len(kids))
+	}
+	return wanode.NodeChildren(&kids[0])
+}
+
+func TestBuildOfferStanzaVideo(t *testing.T) {
+	peer := types.NewJID("62440234549366", types.HiddenUserServer)
+	node, _, err := BuildOfferStanza(context.Background(), buildTestSock{}, "C1", []byte("k"), peer, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tags := []string{}
+	var capContent []byte
+	var video *waBinary.Node
+	for _, c := range offerChildren(t, node) {
+		tags = append(tags, c.Tag)
+		if c.Tag == "capability" {
+			capContent = c.Content.([]byte)
+		}
+		if c.Tag == "video" {
+			cc := c
+			video = &cc
+		}
+	}
+	if video == nil {
+		t.Fatalf("no video child in video offer: %v", tags)
+	}
+	if wanode.AttrString(video.Attrs, "enc") != "h.264" || wanode.AttrString(video.Attrs, "dec") != "H264" {
+		t.Errorf("video child spelling wrong: %+v", video.Attrs)
+	}
+	want := []byte{0x01, 0x05, 0xf7, 0x09, 0xe4, 0xfa, 0x13}
+	if !bytes.Equal(capContent, want) {
+		t.Errorf("video capability = %x, want %x", capContent, want)
+	}
+	for i, tag := range tags {
+		if tag == "video" {
+			if tags[i-1] != "audio" || tags[i+1] != "net" {
+				t.Errorf("video misplaced between %q and %q: %v", tags[i-1], tags[i+1], tags)
+			}
+		}
+	}
+}
+
+func TestBuildOfferStanzaAudioUnchanged(t *testing.T) {
+	peer := types.NewJID("62440234549366", types.HiddenUserServer)
+	node, _, err := BuildOfferStanza(context.Background(), buildTestSock{}, "C1", []byte("k"), peer, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range offerChildren(t, node) {
+		if c.Tag == "video" {
+			t.Fatal("audio offer must not carry video child")
+		}
+		if c.Tag == "capability" {
+			want := []byte{0x01, 0x05, 0xf7, 0x09, 0xe4, 0xbb, 0x13}
+			if !bytes.Equal(c.Content.([]byte), want) {
+				t.Errorf("audio capability changed: %x", c.Content.([]byte))
+			}
+		}
+	}
+}
+
+func TestBuildAcceptStanzaVideo(t *testing.T) {
+	peer := types.NewJID("62440234549366", types.HiddenUserServer)
+	creator := types.NewJID("111", types.HiddenUserServer)
+	node, err := BuildAcceptStanza(context.Background(), buildTestSock{}, "C1", []byte("k"), peer, creator, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tags := []string{}
+	for _, c := range offerChildren(t, node) {
+		tags = append(tags, c.Tag)
+	}
+	if len(tags) < 2 || tags[0] != "audio" || tags[1] != "video" {
+		t.Errorf("video must follow audio in accept: %v", tags)
+	}
+}
+
+func TestBuildAcceptStanzaAudioUnchanged(t *testing.T) {
+	peer := types.NewJID("62440234549366", types.HiddenUserServer)
+	creator := types.NewJID("111", types.HiddenUserServer)
+	node, err := BuildAcceptStanza(context.Background(), buildTestSock{}, "C1", []byte("k"), peer, creator, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range offerChildren(t, node) {
+		if c.Tag == "video" {
+			t.Fatal("audio accept must not carry video child")
+		}
+	}
+}
+
+func TestBuildPreacceptStanzaVideo(t *testing.T) {
+	peer := types.NewJID("62440234549366", types.HiddenUserServer)
+	creator := types.NewJID("111", types.HiddenUserServer)
+	node := BuildPreacceptStanza(peer, "C1", creator, true)
+	hasVideo := false
+	for _, c := range offerChildren(t, node) {
+		if c.Tag == "video" {
+			hasVideo = true
+		}
+		if c.Tag == "capability" {
+			want := []byte{0x01, 0x05, 0xf7, 0x09, 0xe4, 0xbb, 0x13}
+			if !bytes.Equal(c.Content.([]byte), want) {
+				t.Errorf("video preaccept must carry the OFFER blob, got %x", c.Content.([]byte))
+			}
+		}
+	}
+	if !hasVideo {
+		t.Error("no video child in video preaccept")
+	}
+}
+
+func TestBuildPreacceptStanzaAudioUnchanged(t *testing.T) {
+	peer := types.NewJID("62440234549366", types.HiddenUserServer)
+	creator := types.NewJID("111", types.HiddenUserServer)
+	node := BuildPreacceptStanza(peer, "C1", creator, false)
+	for _, c := range offerChildren(t, node) {
+		if c.Tag == "video" {
+			t.Fatal("audio preaccept must not carry video")
+		}
+		if c.Tag == "capability" {
+			want := []byte{0x01, 0x05, 0xf7, 0x09, 0xe4, 0xbb, 0x07}
+			if !bytes.Equal(c.Content.([]byte), want) {
+				t.Errorf("audio preaccept blob changed: %x", c.Content.([]byte))
+			}
+		}
+	}
+}
 
 func TestBuildTerminateElsewhereStanza(t *testing.T) {
 	peer := types.NewJID("62440234549366", types.HiddenUserServer)
