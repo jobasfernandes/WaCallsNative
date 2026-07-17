@@ -39,9 +39,16 @@ func (m *CallManager) HandleCallOffer(ctx context.Context, node *waBinary.Node, 
 	m.log.Debug("offer inner node structure", "call_id", callID, "children", childTagSummary(info.InnerNode))
 
 	mediaType := core.CallMediaTypeAudio
+	if signaling.OfferHasVideo(info.InnerNode) {
+		mediaType = core.CallMediaTypeVideo
+	}
 
 	m.mu.Lock()
 	call := NewIncomingCall(callID, peerJid.String(), creator, "", mediaType)
+	if mediaType == core.CallMediaTypeVideo {
+		m.localVideo = true
+		m.remoteVideo = true
+	}
 	if callKey != nil {
 		call.EncryptionKey = callKey
 	}

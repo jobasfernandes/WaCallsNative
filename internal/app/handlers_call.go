@@ -50,6 +50,7 @@ func (s *Server) doStartCall(sess *session.Session, w http.ResponseWriter, r *ht
 	}
 	var body struct {
 		Phone string `json:"phone"`
+		Video bool   `json:"video"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || strings.TrimSpace(body.Phone) == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "phone required"})
@@ -65,7 +66,7 @@ func (s *Server) doStartCall(sess *session.Session, w http.ResponseWriter, r *ht
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "operator already on a call"})
 		return
 	}
-	st, err := sess.StartCall(r.Context(), phone)
+	st, err := sess.StartCall(r.Context(), phone, body.Video)
 	if errors.Is(err, session.ErrTooManyCalls) {
 		writeJSON(w, http.StatusTooManyRequests, map[string]string{"error": "max concurrent calls"})
 		return

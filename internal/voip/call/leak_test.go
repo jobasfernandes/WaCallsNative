@@ -95,7 +95,7 @@ func TestFailedStartCallClosesCodec(t *testing.T) {
 		return []engine.Extension{audio.New(codec)}
 	}, 0, func(string, *CallManager) {}, nil)
 
-	_, err := client.StartCall(context.Background(), types.NewJID("5511999999999", types.DefaultUserServer))
+	_, err := client.StartCall(context.Background(), types.NewJID("5511999999999", types.DefaultUserServer), false)
 	if err == nil {
 		t.Fatal("expected StartCall to fail")
 	}

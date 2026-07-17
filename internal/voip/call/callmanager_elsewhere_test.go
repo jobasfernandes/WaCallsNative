@@ -82,7 +82,7 @@ func outgoingRingingManager(t *testing.T, sock signaling.Socket) *CallManager {
 	cm := NewCallManager(sock, slog.Default())
 	cm.relay = &fakeRelay{noConn: true}
 	peer := types.NewJID("62440234549366", types.HiddenUserServer)
-	if err := cm.StartCall(context.Background(), "CALL1", peer); err != nil {
+	if err := cm.StartCall(context.Background(), "CALL1", peer, false); err != nil {
 		t.Fatalf("start call: %v", err)
 	}
 	t.Cleanup(cm.cleanupMedia)

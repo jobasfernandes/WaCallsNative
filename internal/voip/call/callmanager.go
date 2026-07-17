@@ -128,7 +128,7 @@ func (m *CallManager) emitState() {
 	}
 }
 
-func (m *CallManager) StartCall(ctx context.Context, callID string, peerJid types.JID) error {
+func (m *CallManager) StartCall(ctx context.Context, callID string, peerJid types.JID, video bool) error {
 	m.mu.Lock()
 	if m.currentCall != nil && !m.currentCall.IsEnded() {
 		m.mu.Unlock()
@@ -136,6 +136,9 @@ func (m *CallManager) StartCall(ctx context.Context, callID string, peerJid type
 	}
 
 	mediaType := core.CallMediaTypeAudio
+	if video {
+		mediaType = core.CallMediaTypeVideo
+	}
 	creator := m.sock.OwnLID()
 	if creator.IsEmpty() {
 		creator = m.sock.OwnPN()
@@ -146,6 +149,10 @@ func (m *CallManager) StartCall(ctx context.Context, callID string, peerJid type
 	callKey := media.GenerateCallKey()
 	call.EncryptionKey = callKey
 	m.currentCall = call
+	if video {
+		m.localVideo = true
+		m.remoteVideo = true
+	}
 	m.initialTransportSent = false
 	m.outgoingPreacceptSent = false
 

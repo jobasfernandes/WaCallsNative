@@ -24,12 +24,12 @@ func (s *Session) HasCall(callID string) bool {
 	return ok
 }
 
-func (s *Session) StartCall(ctx context.Context, phone string) (StartedCall, error) {
+func (s *Session) StartCall(ctx context.Context, phone string, video bool) (StartedCall, error) {
 	if max := s.mgr.maxCalls; max > 0 && s.calls.Count() >= max {
 		return StartedCall{}, ErrTooManyCalls
 	}
 	peer := types.NewJID(phone, types.DefaultUserServer)
-	callID, err := s.calls.StartCall(ctx, peer)
+	callID, err := s.calls.StartCall(ctx, peer, video)
 	if err != nil {
 		return StartedCall{}, err
 	}
