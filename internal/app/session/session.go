@@ -191,9 +191,17 @@ func (s *Session) wireCall(callID string, cm *call.CallManager) {
 			}
 		}()
 	}
-	cm.OnPeerVideo = func(callID string, annexB []byte) {
-		// F2: prove the inbound H264 path end to end; F3 forwards this to a browser video track.
-		s.log.Debug("video frame received", "call_id", callID, "bytes", len(annexB))
+	cm.OnPeerVideo = func(callID string, annexB []byte, dur time.Duration) {
+		if b := s.getBridge(callID); b != nil {
+			if err := b.WriteVideo(annexB, dur); err != nil {
+				s.log.Debug("write video to browser failed", "call_id", callID, "err", err)
+			}
+		}
+	}
+	cm.OnPeerVideoRotation = func(callID string, deg int) {
+		if b := s.getBridge(callID); b != nil {
+			b.SendRotation(deg)
+		}
 	}
 }
 
