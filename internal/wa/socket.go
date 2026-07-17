@@ -38,8 +38,8 @@ func nodeHandlersValue(cli *whatsmeow.Client) (reflect.Value, error) {
 		return reflect.Value{}, errors.New("whatsmeow nodeHandlers is not a live map")
 	}
 	elem := m.Type().Elem()
-	ctxType := reflect.TypeOf((*context.Context)(nil)).Elem()
-	nodeType := reflect.TypeOf((*waBinary.Node)(nil))
+	ctxType := reflect.TypeFor[context.Context]()
+	nodeType := reflect.TypeFor[*waBinary.Node]()
 	if elem.Kind() != reflect.Func || elem.NumIn() != 2 || elem.NumOut() != 0 ||
 		elem.In(0) != ctxType || elem.In(1) != nodeType {
 		return reflect.Value{}, errors.New("whatsmeow nodeHandlers has an unexpected element type")
@@ -89,13 +89,13 @@ func CallInterceptorAvailable(cli *whatsmeow.Client) bool {
 // nodeHandlers field with the expected element type, without constructing a client. Used by
 // the doctor to surface a silent degradation to the dual-ack fallback after a whatsmeow bump.
 func CallInterceptorSeamPresent() bool {
-	f, ok := reflect.TypeOf(whatsmeow.Client{}).FieldByName("nodeHandlers")
+	f, ok := reflect.TypeFor[whatsmeow.Client]().FieldByName("nodeHandlers")
 	if !ok || f.Type.Kind() != reflect.Map {
 		return false
 	}
 	elem := f.Type.Elem()
-	ctxType := reflect.TypeOf((*context.Context)(nil)).Elem()
-	nodeType := reflect.TypeOf((*waBinary.Node)(nil))
+	ctxType := reflect.TypeFor[context.Context]()
+	nodeType := reflect.TypeFor[*waBinary.Node]()
 	return elem.Kind() == reflect.Func && elem.NumIn() == 2 && elem.NumOut() == 0 &&
 		elem.In(0) == ctxType && elem.In(1) == nodeType
 }

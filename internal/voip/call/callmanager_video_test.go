@@ -3,6 +3,7 @@ package call
 import (
 	"context"
 	"errors"
+	"slices"
 	"strconv"
 	"sync"
 	"testing"
@@ -68,9 +69,9 @@ func (s *recVideoSock) videoStates() []string {
 func (s *recVideoSock) lastVideo() (sentVideoStanza, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	for i := len(s.sent) - 1; i >= 0; i-- {
-		if s.sent[i].tag == "video" {
-			return s.sent[i], true
+	for _, st := range slices.Backward(s.sent) {
+		if st.tag == "video" {
+			return st, true
 		}
 	}
 	return sentVideoStanza{}, false
