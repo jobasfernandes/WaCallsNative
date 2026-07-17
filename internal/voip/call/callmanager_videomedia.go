@@ -131,12 +131,18 @@ func (m *CallManager) handleVideoPacket(data []byte, ssrc uint32) {
 		m.mu.Lock()
 		if m.videoSsrc == 0 {
 			m.videoSsrc = ssrc
+			// Subscribe the peer video SSRC at stream layer 1 so the relay delivers the full
+			// video layer instead of the throttled base layer (low quality otherwise).
+			m.relay.SetPeerVideoSsrc(ssrc)
+			m.mu.Unlock()
+			go m.relay.ResendSubscriptions()
 			m.log.Info("video stream locked", "call_id", callID, "ssrc", ssrc, "pt", data[1]&0x7f)
 		} else if m.videoSsrc != ssrc {
 			m.mu.Unlock()
 			return
+		} else {
+			m.mu.Unlock()
 		}
-		m.mu.Unlock()
 	}
 
 	au, dur := asm.feed(pkt.Header.SequenceNumber, pkt.Payload, pkt.Header.Timestamp, pkt.Header.Marker)
