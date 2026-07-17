@@ -11,9 +11,10 @@ import (
 )
 
 var (
-	capabilityOffer      = []byte{0x01, 0x05, 0xf7, 0x09, 0xe4, 0xbb, 0x13}
-	capabilityVideoOffer = []byte{0x01, 0x05, 0xf7, 0x09, 0xe4, 0xfa, 0x13}
-	capabilityPreaccept  = []byte{0x01, 0x05, 0xf7, 0x09, 0xe4, 0xbb, 0x07}
+	capabilityOffer          = []byte{0x01, 0x05, 0xf7, 0x09, 0xe4, 0xbb, 0x13}
+	capabilityVideoOffer     = []byte{0x01, 0x05, 0xf7, 0x09, 0xe4, 0xfa, 0x13}
+	capabilityPreaccept      = []byte{0x01, 0x05, 0xf7, 0x09, 0xe4, 0xbb, 0x07}
+	capabilityVideoPreaccept = []byte{0x01, 0x05, 0xff, 0x09, 0xe0, 0xfa, 0x13}
 )
 
 func BuildOfferStanza(ctx context.Context, sock Socket, callID string, callKey []byte, peerJid types.JID, video bool) (waBinary.Node, []types.JID, error) {
@@ -92,20 +93,19 @@ func BuildAcceptStanza(ctx context.Context, sock Socket, callID string, callKey 
 
 	acceptContent := []waBinary.Node{
 		{Tag: "audio", Attrs: waBinary.Attrs{"enc": "opus", "rate": "16000"}},
-	}
-	if video {
-		acceptContent = append(acceptContent, videoAcceptNode())
-	}
-	acceptContent = append(acceptContent,
-		waBinary.Node{Tag: "net", Attrs: waBinary.Attrs{"medium": "3"}},
+		{Tag: "net", Attrs: waBinary.Attrs{"medium": "3"}},
 		*encNode,
-		waBinary.Node{Tag: "encopt", Attrs: waBinary.Attrs{"keygen": "2"}},
-	)
+		{Tag: "encopt", Attrs: waBinary.Attrs{"keygen": "2"}},
+	}
 	if includeDeviceIdentity {
 		if di, ok := sock.AccountDeviceIdentityNode(); ok {
 			acceptContent = append(acceptContent, di)
 		}
 	}
+	if video {
+		acceptContent = append(acceptContent, videoAcceptNode())
+	}
+
 	return waBinary.Node{
 		Tag:   "call",
 		Attrs: waBinary.Attrs{"to": wanode.MustJID(wanode.CleanJID(peerJid.String())), "id": GenerateCallStanzaID()},
@@ -166,13 +166,10 @@ func BuildPreacceptStanza(peerJid types.JID, callID string, callCreator types.JI
 	content := []waBinary.Node{
 		{Tag: "audio", Attrs: waBinary.Attrs{"enc": "opus", "rate": "16000"}},
 	}
-	if video {
-		content = append(content, videoPreacceptNode())
-	}
 	content = append(content, waBinary.Node{Tag: "encopt", Attrs: waBinary.Attrs{"keygen": "2"}})
 	capability := capabilityPreaccept
 	if video {
-		capability = capabilityOffer
+		capability = capabilityVideoPreaccept
 	}
 	content = append(content, waBinary.Node{Tag: "capability", Attrs: waBinary.Attrs{"ver": "1"}, Content: capability})
 	return waBinary.Node{

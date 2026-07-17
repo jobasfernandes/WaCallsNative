@@ -77,17 +77,9 @@ func (m *CallManager) HandleCallOffer(ctx context.Context, node *waBinary.Node, 
 	m.peerSsrcs = []uint32{media.GenerateSecureSsrc(callID, peerJid.String(), 0)}
 	m.mu.Unlock()
 
-	if mediaType == core.CallMediaTypeVideo {
-		// A video call's downlink (incl. audio) only flows once the relay Allocate declares
-		// the video SSRC set and we subscribe to the peer video stream at stream layer 1
-		// (counter=2 is WhatsApp's video-SSRC slot; audio is 0).
-		m.relay.SetVideoSsrc(media.GenerateSecureSsrc(callID, sj, 2))
-		m.relay.SetPeerVideoSsrc(media.GenerateSecureSsrc(callID, peerJid.String(), 2))
-	}
-
 	m.applyVoipSettings(info.InnerNode, callID)
 
-	preaccept := signaling.BuildPreacceptStanza(peerJid, callID, wanode.MustJID(creator), false)
+	preaccept := signaling.BuildPreacceptStanza(peerJid, callID, wanode.MustJID(creator), mediaType == core.CallMediaTypeVideo)
 	if err := m.sock.SendNode(ctx, preaccept); err != nil {
 		m.log.Error("send preaccept", "err", err)
 	}

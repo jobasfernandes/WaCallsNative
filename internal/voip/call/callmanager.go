@@ -206,7 +206,7 @@ func (m *CallManager) AcceptCall(ctx context.Context, callID string) error {
 	m.mu.Unlock()
 
 	if key != nil {
-		acceptNode, err := signaling.BuildAcceptStanza(ctx, m.sock, callID, key, peer, creator, false)
+		acceptNode, err := signaling.BuildAcceptStanza(ctx, m.sock, callID, key, peer, creator, call.MediaType == core.CallMediaTypeVideo)
 		if err != nil {
 			m.log.Error("build accept failed", "err", err)
 		} else if err := m.sock.SendNode(ctx, acceptNode); err != nil {
