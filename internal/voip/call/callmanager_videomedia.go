@@ -15,6 +15,12 @@ type videoAssembler struct {
 	au     []byte
 	lastTs uint32
 	tsInit bool
+
+	// Diagnostic window: frames and bytes emitted since statStart.
+	framesRx  int
+	bytesRx   int
+	idrRx     int
+	statStart time.Time
 }
 
 func (a *videoAssembler) feed(seq uint16, payload []byte, ts uint32, marker bool) ([]byte, time.Duration) {
@@ -149,9 +155,49 @@ func (m *CallManager) handleVideoPacket(data []byte, ssrc uint32) {
 	if au == nil {
 		return
 	}
+	m.logVideoRx(callID, asm, au)
 	if m.OnPeerVideo != nil {
 		m.OnPeerVideo(callID, au, dur)
 	}
+}
+
+// logVideoRx accumulates per-frame stats and emits a ~5s summary so we can tell a low-bitrate
+// downlink (small frames at a normal rate) from frame loss (frequent keyframe waits). Metadata
+// only, never the payload.
+func (m *CallManager) logVideoRx(callID string, asm *videoAssembler, au []byte) {
+	now := time.Now()
+	if asm.statStart.IsZero() {
+		asm.statStart = now
+	}
+	asm.framesRx++
+	asm.bytesRx += len(au)
+	if annexBHasIDR(au) {
+		asm.idrRx++
+	}
+	elapsed := now.Sub(asm.statStart)
+	if elapsed < 5*time.Second {
+		return
+	}
+	secs := elapsed.Seconds()
+	m.log.Info("video rx summary", "call_id", callID,
+		"fps", float64(asm.framesRx)/secs,
+		"kbps", float64(asm.bytesRx*8)/secs/1000,
+		"avg_frame_bytes", asm.bytesRx/max(asm.framesRx, 1),
+		"idr", asm.idrRx,
+		"keyframe_waits", asm.depack.KeyframeWaits)
+	asm.framesRx, asm.bytesRx, asm.idrRx = 0, 0, 0
+	asm.statStart = now
+}
+
+func annexBHasIDR(au []byte) bool {
+	for i := 0; i+4 < len(au); i++ {
+		if au[i] == 0 && au[i+1] == 0 && au[i+2] == 0 && au[i+3] == 1 {
+			if au[i+4]&0x1f == 5 {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (m *CallManager) resetVideoRecvLocked() {

@@ -16,6 +16,9 @@ type Depacketizer struct {
 	lastSeq      uint16
 	seqInit      bool
 	waitKeyframe bool
+
+	// KeyframeWaits counts sequence-gap events that dropped to keyframe-wait (diagnostic).
+	KeyframeWaits int
 }
 
 // Depacketize returns the complete NAL units (no start code) contained in one RTP payload.
@@ -29,6 +32,9 @@ func (d *Depacketizer) Depacketize(seq uint16, payload []byte) ([][]byte, error)
 	if d.seqInit && seq != d.lastSeq+1 {
 		d.fuBuf = nil
 		d.fuActive = false
+		if !d.waitKeyframe {
+			d.KeyframeWaits++
+		}
 		d.waitKeyframe = true
 	}
 	d.lastSeq = seq
