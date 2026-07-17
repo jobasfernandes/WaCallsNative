@@ -169,6 +169,12 @@ paths:
                 phone:
                   type: string
                   description: E.164-ish phone number; non-digits are stripped
+                video:
+                  type: boolean
+                  description: >-
+                    Place the call as a video call (advertises video in the offer).
+                    Video media is not yet carried, so the peer sees no picture until
+                    the media legs land; signaling only.
       responses:
         "200": { $ref: "#/components/responses/CallRef" }
         "400": { $ref: "#/components/responses/BadRequest" }
@@ -371,6 +377,62 @@ paths:
         "404": { $ref: "#/components/responses/NotFound" }
         "409":
           description: Call is not active
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429": { $ref: "#/components/responses/RateLimited" }
+        "500": { $ref: "#/components/responses/InternalError" }
+  /api/sessions/{sid}/calls/{id}/video:
+    post:
+      operationId: videoAction
+      summary: Drive the call's video flow (upgrade, accept, reject, stop, orientation)
+      description: >-
+        Signals a video-flow transition to the peer. "request" asks the peer to add
+        video, "accept"/"reject" answer the peer's request, "stop" turns local video
+        off, and "orientation" reports the local device orientation (0..3). Video
+        media is not yet carried; this endpoint only drives the signaling state machine.
+      parameters:
+        - $ref: "#/components/parameters/Sid"
+        - $ref: "#/components/parameters/CallId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action]
+              properties:
+                action:
+                  type: string
+                  enum: [request, accept, reject, stop, orientation]
+                orientation:
+                  type: integer
+                  minimum: 0
+                  maximum: 3
+                  description: Required when action is "orientation".
+      responses:
+        "200":
+          description: Transition signaled
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    const: ok
+        "400":
+          description: Missing or invalid action/orientation
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Call is not in a state that accepts the transition
           content:
             application/json:
               schema:
@@ -628,6 +690,7 @@ paths:
                   - $ref: "#/components/schemas/CallMarkEvent"
                   - $ref: "#/components/schemas/CallRelayEvent"
                   - $ref: "#/components/schemas/CallPeerMuteEvent"
+                  - $ref: "#/components/schemas/CallVideoEvent"
                   - $ref: "#/components/schemas/PingEvent"
         "401": { $ref: "#/components/responses/Unauthorized" }
         "429": { $ref: "#/components/responses/RateLimited" }
@@ -827,6 +890,9 @@ components:
           description: Unix milliseconds
         status:
           $ref: "#/components/schemas/CallStatus"
+        video:
+          type: boolean
+          description: Whether the call was offered as a video call; absent for audio
         endedAt:
           type: integer
           format: int64
@@ -960,6 +1026,9 @@ components:
           type: string
         peer:
           type: string
+        video:
+          type: boolean
+          description: Whether the incoming call was offered as a video call
         offeredAt:
           type: integer
           format: int64
@@ -1064,6 +1133,36 @@ components:
           type: string
         muted:
           type: boolean
+    CallVideoEvent:
+      type: object
+      description: >-
+        The call's video-flow state, parsed from in-call <video> signaling. Emitted on
+        each transition; the latest event reflects the current state. Transient, not
+        persisted.
+      required: [type, sessionId, id, local, remote, pending, orientation]
+      properties:
+        type:
+          type: string
+          const: call-video
+        sessionId:
+          type: string
+        id:
+          type: string
+        local:
+          type: boolean
+          description: Whether our side is sending (or has requested to send) video.
+        remote:
+          type: boolean
+          description: Whether the peer is sending video.
+        pending:
+          type: string
+          enum: ["", in, out]
+          description: >-
+            "out" while our upgrade awaits the peer, "in" while the peer's request
+            awaits us, "" once settled.
+        orientation:
+          type: integer
+          description: Peer device orientation (0..3).
     PingEvent:
       type: object
       required: [type]

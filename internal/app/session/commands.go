@@ -13,6 +13,8 @@ import (
 
 var ErrTooManyCalls = errors.New("max concurrent calls")
 
+var ErrBadVideoAction = errors.New("invalid video action")
+
 type StartedCall struct{ CallID, Peer, PeerName, PeerPhotoURL string }
 
 func (s *Session) ID() string { return s.id }
@@ -65,6 +67,26 @@ func (s *Session) RejectCall(ctx context.Context, callID string) error {
 
 func (s *Session) SetMute(ctx context.Context, callID string, muted bool) error {
 	return s.calls.SetMute(ctx, callID, muted)
+}
+
+func (s *Session) VideoAction(ctx context.Context, callID, action string, orientation *int) error {
+	switch action {
+	case "request":
+		return s.calls.RequestVideoUpgrade(ctx, callID)
+	case "accept":
+		return s.calls.AcceptVideoUpgrade(ctx, callID)
+	case "reject":
+		return s.calls.RejectVideoUpgrade(ctx, callID)
+	case "stop":
+		return s.calls.StopVideo(ctx, callID)
+	case "orientation":
+		if orientation == nil || *orientation < 0 || *orientation > 3 {
+			return ErrBadVideoAction
+		}
+		return s.calls.SetVideoOrientation(ctx, callID, *orientation)
+	default:
+		return ErrBadVideoAction
+	}
 }
 
 func (s *Session) EndCall(ctx context.Context, callID string) error {

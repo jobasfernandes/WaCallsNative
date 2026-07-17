@@ -43,6 +43,40 @@ func (s *Server) handleEndCall(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) handleVideoAction(w http.ResponseWriter, r *http.Request) {
+	if sess := s.sessionByID(w, r.PathValue("sid")); sess != nil {
+		s.doVideoAction(sess, w, r)
+	}
+}
+
+func (s *Server) doVideoAction(sess *session.Session, w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !sess.HasCall(id) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such call"})
+		return
+	}
+	var body struct {
+		Action      string `json:"action"`
+		Orientation *int   `json:"orientation"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Action == "" {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "action required"})
+		return
+	}
+	err := sess.VideoAction(r.Context(), id, body.Action, body.Orientation)
+	var callErr *call.CallError
+	switch {
+	case err == nil:
+		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+	case errors.Is(err, session.ErrBadVideoAction):
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+	case errors.As(err, &callErr):
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+	default:
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+	}
+}
+
 func (s *Server) doStartCall(sess *session.Session, w http.ResponseWriter, r *http.Request) {
 	if !sess.IsPaired() {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "not paired"})

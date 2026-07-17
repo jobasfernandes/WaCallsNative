@@ -38,3 +38,13 @@ func TestWebRTCUnknownCallIs404(t *testing.T) {
 		t.Fatalf("webrtc unknown call: want 404, got %d %s", rec.Code, rec.Body.String())
 	}
 }
+
+func TestVideoActionUnknownCallIs404(t *testing.T) {
+	s := callServerWithEmptySession("s1")
+	rec := httptest.NewRecorder()
+	s.routes().ServeHTTP(rec, httptest.NewRequest("POST", "/api/sessions/s1/calls/ghost/video",
+		strings.NewReader(`{"action":"request"}`)))
+	if rec.Code != 404 {
+		t.Fatalf("video action unknown call: want 404, got %d %s", rec.Code, rec.Body.String())
+	}
+}
