@@ -50,10 +50,11 @@ type CallManager struct {
 	videoPendingIn       bool
 	peerVideoOrientation int
 
-	recvKM    core.SrtpKeyingMaterial
-	videoSrtp *media.SrtpContext
-	videoSsrc uint32
-	videoAsm  *videoAssembler
+	recvKM        core.SrtpKeyingMaterial
+	videoSrtp     *media.SrtpContext
+	videoSsrc     uint32
+	videoAsm      *videoAssembler
+	videoRotation int
 
 	timeouts      Timeouts
 	watchdogTick  time.Duration
@@ -93,7 +94,8 @@ type CallManager struct {
 
 	OnVideoState          func(callID string, snap core.VideoSnapshot)
 	OnVideoUpgradeRequest func(callID string)
-	OnPeerVideo           func(callID string, annexB []byte)
+	OnPeerVideo           func(callID string, annexB []byte, dur time.Duration)
+	OnPeerVideoRotation   func(callID string, deg int)
 }
 
 func NewCallManager(sock signaling.Socket, log *slog.Logger, exts ...engine.Extension) *CallManager {
