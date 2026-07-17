@@ -72,7 +72,7 @@ func (m *CallManager) HandleCallOffer(ctx context.Context, node *waBinary.Node, 
 
 	m.applyVoipSettings(info.InnerNode, callID)
 
-	preaccept := signaling.BuildPreacceptStanza(peerJid, callID, wanode.MustJID(creator))
+	preaccept := signaling.BuildPreacceptStanza(peerJid, callID, wanode.MustJID(creator), false)
 	if err := m.sock.SendNode(ctx, preaccept); err != nil {
 		m.log.Error("send preaccept", "err", err)
 	}
@@ -378,7 +378,7 @@ func (m *CallManager) HandleCallAck(ctx context.Context, node *waBinary.Node) {
 	m.applyVoipSettings(node, callID)
 
 	if sendPreaccept {
-		_ = m.sock.SendNode(ctx, signaling.BuildPreacceptStanza(peer, callID, creator))
+		_ = m.sock.SendNode(ctx, signaling.BuildPreacceptStanza(peer, callID, creator, false))
 	}
 	m.connectRelays(endpoints)
 }

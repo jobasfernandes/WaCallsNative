@@ -204,3 +204,48 @@ func (c *Client) SetMute(ctx context.Context, callID string, muted bool) error {
 	}
 	return &CallError{"no call with id " + callID}
 }
+
+func (c *Client) RequestVideoUpgrade(ctx context.Context, callID string) error {
+	if cm, ok := c.get(callID); ok {
+		return cm.RequestVideoUpgrade(ctx)
+	}
+	return &CallError{"no call with id " + callID}
+}
+
+func (c *Client) AcceptVideoUpgrade(ctx context.Context, callID string) error {
+	if cm, ok := c.get(callID); ok {
+		return cm.AcceptVideoUpgrade(ctx)
+	}
+	return &CallError{"no call with id " + callID}
+}
+
+func (c *Client) RejectVideoUpgrade(ctx context.Context, callID string) error {
+	if cm, ok := c.get(callID); ok {
+		return cm.RejectVideoUpgrade(ctx)
+	}
+	return &CallError{"no call with id " + callID}
+}
+
+func (c *Client) StopVideo(ctx context.Context, callID string) error {
+	if cm, ok := c.get(callID); ok {
+		return cm.StopVideo(ctx)
+	}
+	return &CallError{"no call with id " + callID}
+}
+
+func (c *Client) SetVideoOrientation(ctx context.Context, callID string, orientation int) error {
+	if cm, ok := c.get(callID); ok {
+		return cm.SetVideoOrientation(ctx, orientation)
+	}
+	return &CallError{"no call with id " + callID}
+}
+
+func (c *Client) HandleVideoStanza(node *waBinary.Node) {
+	info := signaling.ExtractNodeInfo(node)
+	if info == nil {
+		return
+	}
+	if cm, ok := c.get(info.CallID); ok {
+		cm.HandleVideoStanza(node)
+	}
+}

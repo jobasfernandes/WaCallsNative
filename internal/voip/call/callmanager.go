@@ -44,6 +44,12 @@ type CallManager struct {
 	calleeDevices         []types.JID
 	debeEnabled           bool
 
+	localVideo           bool
+	remoteVideo          bool
+	videoGate            bool
+	videoPendingIn       bool
+	peerVideoOrientation int
+
 	timeouts      Timeouts
 	watchdogTick  time.Duration
 	watchdogStop  chan struct{}
@@ -79,6 +85,9 @@ type CallManager struct {
 	OnMark        func(callID string, mark string, elapsedMs int64)
 	OnRelay       func(callID, relayName string, rttMs int, hasRtt bool)
 	OnPeerMute    func(callID string, muted bool)
+
+	OnVideoState          func(callID string, snap core.VideoSnapshot)
+	OnVideoUpgradeRequest func(callID string)
 }
 
 func NewCallManager(sock signaling.Socket, log *slog.Logger, exts ...engine.Extension) *CallManager {
@@ -146,7 +155,7 @@ func (m *CallManager) StartCall(ctx context.Context, callID string, peerJid type
 	m.peerSsrcs = []uint32{media.GenerateSecureSsrc(callID, resolved.String(), 0)}
 	m.mu.Unlock()
 
-	offer, calleeDevices, err := signaling.BuildOfferStanza(ctx, m.sock, callID, callKey, resolved)
+	offer, calleeDevices, err := signaling.BuildOfferStanza(ctx, m.sock, callID, callKey, resolved, mediaType == core.CallMediaTypeVideo)
 	if err != nil {
 		return err
 	}
@@ -190,7 +199,7 @@ func (m *CallManager) AcceptCall(ctx context.Context, callID string) error {
 	m.mu.Unlock()
 
 	if key != nil {
-		acceptNode, err := signaling.BuildAcceptStanza(ctx, m.sock, callID, key, peer, creator)
+		acceptNode, err := signaling.BuildAcceptStanza(ctx, m.sock, callID, key, peer, creator, false)
 		if err != nil {
 			m.log.Error("build accept failed", "err", err)
 		} else if err := m.sock.SendNode(ctx, acceptNode); err != nil {
