@@ -220,3 +220,22 @@ func TestRtcpTxLifecycle(t *testing.T) {
 		t.Fatal("rtcpTxStop not cleared after cleanup")
 	}
 }
+
+func TestBuildPrstFeedback(t *testing.T) {
+	pkt := buildPrstFeedback(0x11223344, 1000000)
+	if len(pkt)%4 != 0 {
+		t.Fatalf("PRST must be 4-byte aligned, got %d bytes", len(pkt))
+	}
+	if pkt[0] != 0x8f || pkt[1] != 0xce {
+		t.Fatalf("PRST must be V=2 FMT=15 PT=206, got %02x %02x", pkt[0], pkt[1])
+	}
+	if binary.BigEndian.Uint16(pkt[2:4]) != uint16(len(pkt)/4-1) {
+		t.Fatalf("PRST length word wrong: got %d, want %d", binary.BigEndian.Uint16(pkt[2:4]), len(pkt)/4-1)
+	}
+	if binary.BigEndian.Uint32(pkt[4:8]) != 0x11223344 {
+		t.Fatalf("PRST sender ssrc wrong")
+	}
+	if string(pkt[12:16]) != "PRST" {
+		t.Fatalf("PRST FCI must start with PRST, got %q", string(pkt[12:16]))
+	}
+}
