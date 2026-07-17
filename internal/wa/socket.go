@@ -2,7 +2,11 @@ package wa
 
 import (
 	"context"
+	"errors"
+	"fmt"
+	"reflect"
 	"time"
+	"unsafe"
 
 	"wacalls/internal/voip/signaling"
 
@@ -20,6 +24,66 @@ func NewSocket(cli *whatsmeow.Client) *Socket { return &Socket{cli: cli} }
 var _ signaling.Socket = (*Socket)(nil)
 
 func (s *Socket) di() *whatsmeow.DangerousInternalClient { return s.cli.DangerousInternals() }
+
+// nodeHandlersValue reaches whatsmeow's unexported nodeHandlers map through reflection and
+// returns it as a settable reflect.Value. The map element type is an unexported named func
+// type, so callers work through reflect.MakeFunc / MapIndex rather than a type assertion.
+func nodeHandlersValue(cli *whatsmeow.Client) (reflect.Value, error) {
+	v := reflect.ValueOf(cli).Elem().FieldByName("nodeHandlers")
+	if !v.IsValid() {
+		return reflect.Value{}, errors.New("whatsmeow client has no nodeHandlers field")
+	}
+	m := reflect.NewAt(v.Type(), unsafe.Pointer(v.UnsafeAddr())).Elem()
+	if m.Kind() != reflect.Map || m.IsNil() {
+		return reflect.Value{}, errors.New("whatsmeow nodeHandlers is not a live map")
+	}
+	elem := m.Type().Elem()
+	ctxType := reflect.TypeOf((*context.Context)(nil)).Elem()
+	nodeType := reflect.TypeOf((*waBinary.Node)(nil))
+	if elem.Kind() != reflect.Func || elem.NumIn() != 2 || elem.NumOut() != 0 ||
+		elem.In(0) != ctxType || elem.In(1) != nodeType {
+		return reflect.Value{}, errors.New("whatsmeow nodeHandlers has an unexpected element type")
+	}
+	return m, nil
+}
+
+// InstallCallInterceptor wraps whatsmeow's raw <call> handler so fn sees every inbound call
+// node first; returning true claims the node, so whatsmeow's generic typeless ack is never
+// sent (a <video> upgrade needs a typed ack, which the generic one does not satisfy). It
+// reaches an unexported field through reflection, so a whatsmeow bump can break it: the error
+// return lets callers fall back to the UnknownCallEvent dual-ack path. Call before Connect.
+func (s *Socket) InstallCallInterceptor(fn func(node *waBinary.Node) bool) (err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("call interceptor install: %v", r)
+		}
+	}()
+	handlers, hErr := nodeHandlersValue(s.cli)
+	if hErr != nil {
+		return fmt.Errorf("call interceptor install: %w", hErr)
+	}
+	key := reflect.ValueOf("call")
+	orig := handlers.MapIndex(key)
+	wrapped := reflect.MakeFunc(handlers.Type().Elem(), func(args []reflect.Value) []reflect.Value {
+		node := args[1].Interface().(*waBinary.Node)
+		if fn(node) {
+			return nil
+		}
+		if orig.IsValid() && !orig.IsNil() {
+			orig.Call(args)
+		}
+		return nil
+	})
+	handlers.SetMapIndex(key, wrapped)
+	return nil
+}
+
+// CallInterceptorAvailable reports whether the whatsmeow client exposes the nodeHandlers seam
+// the interceptor needs, without mutating anything (used by the doctor).
+func CallInterceptorAvailable(cli *whatsmeow.Client) bool {
+	_, err := nodeHandlersValue(cli)
+	return err == nil
+}
 
 func (s *Socket) OwnPN() types.JID { return s.di().GetOwnID() }
 
