@@ -191,6 +191,10 @@ func (s *Session) wireCall(callID string, cm *call.CallManager) {
 			}
 		}()
 	}
+	cm.OnPeerVideo = func(callID string, annexB []byte) {
+		// F2: prove the inbound H264 path end to end; F3 forwards this to a browser video track.
+		s.log.Debug("video frame received", "call_id", callID, "bytes", len(annexB))
+	}
 }
 
 func (s *Session) handleEvent(rawEvt any) {
