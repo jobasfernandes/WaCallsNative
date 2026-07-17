@@ -130,10 +130,10 @@ func (b *Broker) EmitSessionQR(sessionID, qr string) {
 	b.broadcast(map[string]any{"type": "session-qr", "sessionId": sessionID, "qr": qr})
 }
 
-func (b *Broker) EmitIncoming(sessionID, id, peer, peerName, peerPhotoURL string) {
+func (b *Broker) EmitIncoming(sessionID, id, peer, peerName, peerPhotoURL string, video bool) {
 	b.broadcast(map[string]any{
 		"type": "incoming", "sessionId": sessionID, "id": id, "peer": peer,
-		"peerName": peerName, "peerPhotoUrl": peerPhotoURL,
+		"peerName": peerName, "peerPhotoUrl": peerPhotoURL, "video": video,
 		"offeredAt": time.Now().UnixMilli(),
 	})
 }
@@ -178,6 +178,16 @@ func (b *Broker) EmitCallPeerMute(sessionID, callID string, muted bool) {
 	b.broadcast(map[string]any{
 		"type": "call-peer-mute", "sessionId": sessionID, "id": callID,
 		"muted": muted,
+	})
+}
+
+// EmitCallVideo broadcasts the call's video flow state parsed from in-call <video> signaling.
+// pending is "out" while our upgrade awaits the peer, "in" while the peer's awaits us, "" once
+// settled. Transient live-only signal like call-quality: never persisted.
+func (b *Broker) EmitCallVideo(sessionID, callID string, local, remote bool, pending string, orientation int) {
+	b.broadcast(map[string]any{
+		"type": "call-video", "sessionId": sessionID, "id": callID,
+		"local": local, "remote": remote, "pending": pending, "orientation": orientation,
 	})
 }
 

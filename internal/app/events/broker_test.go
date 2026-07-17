@@ -204,6 +204,30 @@ func TestEmitCallRelay(t *testing.T) {
 	}
 }
 
+func TestEmitCallVideo(t *testing.T) {
+	b := NewBroker(nil, slog.Default())
+	sub := b.subscribe("cv")
+	defer b.unsubscribe(sub)
+
+	b.EmitCallVideo("s1", "c1", true, false, "out", 0)
+
+	select {
+	case data := <-sub.ch:
+		var ev map[string]any
+		if err := json.Unmarshal(data, &ev); err != nil {
+			t.Fatal(err)
+		}
+		if ev["type"] != "call-video" || ev["sessionId"] != "s1" || ev["id"] != "c1" {
+			t.Fatalf("bad envelope: %v", ev)
+		}
+		if ev["local"] != true || ev["remote"] != false || ev["pending"] != "out" {
+			t.Fatalf("bad video fields: %v", ev)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("no call-video event received")
+	}
+}
+
 func TestEmitCallPeerMute(t *testing.T) {
 	b := NewBroker(nil, slog.Default())
 	sub := b.subscribe("pm")

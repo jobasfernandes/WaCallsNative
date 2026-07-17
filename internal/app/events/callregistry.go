@@ -30,6 +30,7 @@ type CallRecord struct {
 	PeerPhotoURL string     `json:"peerPhotoUrl,omitempty"`
 	StartedAt    int64      `json:"startedAt"`
 	Status       CallStatus `json:"status"`
+	Video        bool       `json:"video,omitempty"`
 	EndedAt      *int64     `json:"endedAt,omitempty"`
 	EndReason    string     `json:"endReason,omitempty"`
 }

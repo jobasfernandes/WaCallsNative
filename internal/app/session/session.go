@@ -16,10 +16,12 @@ import (
 	"wacalls/internal/voip/core"
 	"wacalls/internal/voip/engine"
 	"wacalls/internal/voip/extension/audio"
+	"wacalls/internal/voip/signaling"
 	"wacalls/internal/wa"
 
 	"github.com/mdp/qrterminal/v3"
 	"go.mau.fi/whatsmeow"
+	waBinary "go.mau.fi/whatsmeow/binary"
 	"go.mau.fi/whatsmeow/types"
 	waevents "go.mau.fi/whatsmeow/types/events"
 )
@@ -32,6 +34,7 @@ type Session struct {
 
 	client *whatsmeow.Client
 	calls  *call.Client
+	sock   *wa.Socket
 
 	bridgeMu sync.Mutex
 	bridges  map[string]*Bridge
@@ -59,9 +62,35 @@ func newSession(mgr *Manager, id, name string, client *whatsmeow.Client) *Sessio
 		s.log.Warn("call ended: browser did not return within the grace window", "call_id", callID)
 		s.terminateCall(callID, core.EndCallReasonUserEnded)
 	})
-	s.calls = call.NewClient(wa.NewSocket(client), s.log, s.makeExtensions, mgr.maxCalls, s.wireCall, mgr.newObserver)
+	s.sock = wa.NewSocket(client)
+	s.calls = call.NewClient(s.sock, s.log, s.makeExtensions, mgr.maxCalls, s.wireCall, mgr.newObserver)
+	if err := s.sock.InstallCallInterceptor(s.interceptCallNode); err != nil {
+		s.log.Error("video ack interceptor unavailable; degrading to dual-ack", "err", err)
+	}
 	client.AddEventHandler(s.handleEvent)
 	return s
+}
+
+// interceptCallNode claims raw <call> nodes whose single child is <video> so we can answer
+// with the typed ack the peer requires; everything else falls through to whatsmeow.
+func (s *Session) interceptCallNode(node *waBinary.Node) bool {
+	kids := node.GetChildren()
+	if len(kids) != 1 || kids[0].Tag != "video" {
+		return false
+	}
+	s.handleVideoCallNode(node)
+	return true
+}
+
+func (s *Session) handleVideoCallNode(node *waBinary.Node) {
+	if ack, ok := signaling.BuildVideoAck(node); ok {
+		if err := s.sock.SendNode(context.Background(), ack); err != nil {
+			s.log.Warn("video ack send failed", "err", err)
+		}
+	} else {
+		s.log.Warn("video stanza without id/from; not acked")
+	}
+	s.calls.HandleVideoStanza(node)
 }
 
 func (s *Session) makeExtensions() []engine.Extension {
@@ -86,12 +115,13 @@ func (s *Session) wireCall(callID string, cm *call.CallManager) {
 		peer := pj.String()
 		peerName := resolvePeerName(context.Background(), s.client, pj)
 		photoURL := cachedPhotoURL(context.Background(), s.mgr.photos, s.id, peer)
+		video := c.MediaType == core.CallMediaTypeVideo
 		s.mgr.broker.UpsertCall(events.CallRecord{
 			SessionID: s.id, CallID: c.CallID, Direction: "inbound", Peer: peer,
 			PeerName: peerName, PeerPhotoURL: photoURL,
-			StartedAt: time.Now().UnixMilli(), Status: events.StatusRinging,
+			StartedAt: time.Now().UnixMilli(), Status: events.StatusRinging, Video: video,
 		})
-		s.mgr.broker.EmitIncoming(s.id, c.CallID, peer, peerName, photoURL)
+		s.mgr.broker.EmitIncoming(s.id, c.CallID, peer, peerName, photoURL, video)
 		s.mgr.tracer.StartCall(c.CallID, telemetry.CallAttrs{Session: s.id, Peer: c.PeerJid, Direction: "inbound"})
 		go s.fetchPeerPhoto(pj, c.CallID)
 	}
@@ -123,6 +153,7 @@ func (s *Session) wireCall(callID string, cm *call.CallManager) {
 			rec.Peer = existing.Peer
 			rec.PeerName = existing.PeerName
 			rec.PeerPhotoURL = existing.PeerPhotoURL
+			rec.Video = existing.Video
 		}
 		s.mgr.broker.UpsertCall(rec)
 	}
@@ -147,6 +178,18 @@ func (s *Session) wireCall(callID string, cm *call.CallManager) {
 	}
 	cm.OnPeerMute = func(callID string, muted bool) {
 		s.mgr.broker.EmitCallPeerMute(s.id, callID, muted)
+	}
+	cm.OnVideoState = func(callID string, snap core.VideoSnapshot) {
+		s.mgr.broker.EmitCallVideo(s.id, callID, snap.Local, snap.Remote, snap.Pending, snap.Orientation)
+	}
+	cm.OnVideoUpgradeRequest = func(callID string) {
+		// Interim F1: no media pipeline yet, so decline the peer's upgrade so it does not
+		// stare at a black tile. Removed when the media legs land (F2/F3).
+		go func() {
+			if err := s.calls.RejectVideoUpgrade(context.Background(), callID); err != nil {
+				s.log.Warn("auto-reject of inbound video upgrade failed", "call_id", callID, "err", err)
+			}
+		}()
 	}
 }
 
@@ -176,6 +219,9 @@ func (s *Session) handleEvent(rawEvt any) {
 	case *waevents.UnknownCallEvent:
 		if _, ok := evt.Node.GetOptionalChildByTag("mute_v2"); ok {
 			s.calls.HandleMute(evt.Node)
+		} else if _, ok := evt.Node.GetOptionalChildByTag("video"); ok {
+			// Reached only when the raw-call interceptor failed to install (dual-ack fallback).
+			s.handleVideoCallNode(evt.Node)
 		}
 	}
 }
@@ -318,6 +364,10 @@ func (s *Session) replaceClient(client *whatsmeow.Client) {
 	s.teardownAllCalls()
 	s.client.Disconnect()
 	s.client = client
+	s.sock = wa.NewSocket(client)
+	if err := s.sock.InstallCallInterceptor(s.interceptCallNode); err != nil {
+		s.log.Error("video ack interceptor unavailable; degrading to dual-ack", "err", err)
+	}
 	client.AddEventHandler(s.handleEvent)
 }
 
