@@ -102,12 +102,11 @@ A video preaccept uses the audio **offer** blob (ending `13`), not the preaccept
 
 - Inbound upgrade request: acked, surfaced on SSE, then auto-rejected by the session layer
   so the peer does not wait on a black tile.
-- Inbound video call: rings with `video:true` in the SSE, and is answered audio-only with
-  byte-identical stanzas to a normal audio accept (no behavior change from today). Field
-  probe (2026-07-17): the call connects and the peer hears us, but we do NOT receive the
-  caller's audio - a WhatsApp video-call media arrangement (SSRC/subscription) that the
-  audio-only receive path does not handle. This is pre-existing (F1 does not touch media)
-  and is resolved by the media legs in F2/F3; until then, an inbound video call answered
-  audio-only is effectively one-way. Outbound audio and outbound video calls are unaffected
-  (audio is two-way).
+- Inbound video call: rings with `video:true` in the SSE. It is answered advertising video
+  (the preaccept carries the video capability `01 05 ff 09 e0 fa 13` and the accept a
+  `<video enc="h.264" dec="H264,H265,AV1">` child) - the WhatsApp relay only bridges the video
+  call's downlink once the callee advertises video, so answering audio-only left the receive
+  path silent (field-confirmed 2026-07-17: `rtt_samples` 0 → 13 after advertising video). Audio
+  is now two-way; the peer's video is received but not yet rendered (pixels need the H264 media
+  legs). No video is sent from our side yet, so the peer sees no picture from us.
 - Outbound video call: fully signaled; the peer connects with two-way audio and no picture.
