@@ -84,6 +84,8 @@ type SctpRelayManager struct {
 
 	audioSsrc        atomic.Uint32
 	subscriptionSsrc atomic.Uint32
+	selfVideoSsrc    atomic.Uint32
+	peerVideoSsrc    atomic.Uint32
 	streamSelfSsrcs  []uint32
 	streamPeerSsrcs  []uint32
 
@@ -123,6 +125,10 @@ func NewSctpRelayManager(log *slog.Logger) *SctpRelayManager {
 func (m *SctpRelayManager) SetSsrc(ssrc uint32) { m.audioSsrc.Store(ssrc) }
 
 func (m *SctpRelayManager) SetSubscriptionSsrc(ssrc uint32) { m.subscriptionSsrc.Store(ssrc) }
+
+func (m *SctpRelayManager) SetVideoSsrc(ssrc uint32) { m.selfVideoSsrc.Store(ssrc) }
+
+func (m *SctpRelayManager) SetPeerVideoSsrc(ssrc uint32) { m.peerVideoSsrc.Store(ssrc) }
 
 func (m *SctpRelayManager) SetStreamSsrcs(selfSsrcs, peerSsrcs []uint32) {
 	m.mu.Lock()
@@ -361,7 +367,11 @@ func (m *SctpRelayManager) sendRegistration(conn *relayConnection) {
 	if ssrc == 0 {
 		return
 	}
-	subs := BuildSenderSubscriptions(ssrc)
+	entries := []SubEntry{{SSRC: ssrc, StreamLayer: 0, PayloadType: 0}}
+	if pv := m.peerVideoSsrc.Load(); pv != 0 {
+		entries = append(entries, SubEntry{SSRC: pv, StreamLayer: 1, PayloadType: 0})
+	}
+	subs := BuildSenderSubscriptions(entries...)
 
 	if localUfrag != "" {
 		username := []byte(remoteUfrag + ":" + localUfrag)
@@ -377,9 +387,15 @@ func (m *SctpRelayManager) sendRegistration(conn *relayConnection) {
 		selfSsrcs, peerSsrcs := m.streamSsrcsSnapshot()
 		if len(selfSsrcs) == 0 {
 			selfSsrcs = []uint32{m.audioSsrc.Load()}
+			if sv := m.selfVideoSsrc.Load(); sv != 0 {
+				selfSsrcs = append(selfSsrcs, sv)
+			}
 			peerSsrcs = nil
 			if sub := m.subscriptionSsrc.Load(); sub != 0 {
 				peerSsrcs = []uint32{sub}
+			}
+			if pv := m.peerVideoSsrc.Load(); pv != 0 {
+				peerSsrcs = append(peerSsrcs, pv)
 			}
 		}
 		ssrcList := BuildSSRCSubscriptionList(selfSsrcs, peerSsrcs, 0, 0)
@@ -617,6 +633,8 @@ func (m *SctpRelayManager) Cleanup() {
 	m.connections = map[string]*relayConnection{}
 	m.streamSelfSsrcs = nil
 	m.streamPeerSsrcs = nil
+	m.selfVideoSsrc.Store(0)
+	m.peerVideoSsrc.Store(0)
 	m.lastUsable = 0
 	m.mu.Unlock()
 	m.audioSsrc.Store(0)

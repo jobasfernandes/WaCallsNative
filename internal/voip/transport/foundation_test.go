@@ -25,7 +25,7 @@ func TestVarintEncoding(t *testing.T) {
 
 func TestSenderSubscriptions(t *testing.T) {
 
-	subs := BuildSenderSubscriptions(0x10)
+	subs := BuildSenderSubscriptions(SubEntry{SSRC: 0x10})
 
 	inner := []byte{0x18, 0x10, 0x28, 0x00, 0x30, 0x00}
 
@@ -54,7 +54,7 @@ func TestStunPacketDetection(t *testing.T) {
 }
 
 func TestStunBindingFingerprint(t *testing.T) {
-	subs := BuildSenderSubscriptions(0x12345678)
+	subs := BuildSenderSubscriptions(SubEntry{SSRC: 0x12345678})
 	msg := BuildBindingRequestWithSubs(nil, nil, subs, true, true)
 
 	if binary.BigEndian.Uint32(msg[4:]) != stunMagicCookie {

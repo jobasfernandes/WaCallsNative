@@ -69,6 +69,8 @@ func (r *fakeRelay) Broadcast(data []byte) {
 func (r *fakeRelay) HasConnection() bool               { return !r.noConn }
 func (r *fakeRelay) SetSsrc(uint32)                    {}
 func (r *fakeRelay) SetSubscriptionSsrc(uint32)        {}
+func (r *fakeRelay) SetVideoSsrc(uint32)               {}
+func (r *fakeRelay) SetPeerVideoSsrc(uint32)           {}
 func (r *fakeRelay) SetStreamSsrcs([]uint32, []uint32) {}
 func (r *fakeRelay) SetOnConnected(func(string, int))  {}
 func (r *fakeRelay) SetOnReceive(func([]byte))         {}
