@@ -132,10 +132,23 @@ func (m *CallManager) handleVideoPacket(data []byte, ssrc uint32) {
 	pkt, err := vctx.Unprotect(data)
 	if firstRx {
 		// Diagnostic: proves whether the peer's video reaches us at all (relay/subscription) and,
-		// if so, whether our video SRTP context decrypts it to a plausible H.264 NAL (keying).
+		// if so, whether our video SRTP context decrypts it to a plausible H.264 NAL (keying), plus
+		// the peer's RTP extension profile so we can tell a real CVO (0xBEDE) from the proprietary
+		// 0xDEBE block that parseCVORotation must not read as rotation.
 		plausible := err == nil && pkt != nil && len(pkt.Payload) > 0 && h264.IsPlausibleNALHeader(pkt.Payload[0])
+		extProfile, extByte0 := 0, 0
+		if (data[0]>>4)&1 == 1 {
+			off := 12 + int(data[0]&0x0f)*4
+			if len(data) >= off+4 {
+				extProfile = int(data[off])<<8 | int(data[off+1])
+				if len(data) > off+4 {
+					extByte0 = int(data[off+4])
+				}
+			}
+		}
 		m.log.Info("video rx first packet", "call_id", callID, "ssrc", ssrc, "pt", data[1]&0x7f,
-			"srtp_ok", err == nil, "plausible_nal", plausible)
+			"srtp_ok", err == nil, "plausible_nal", plausible,
+			"ext_profile", extProfile, "ext_byte0", extByte0, "cvo_deg", parseCVORotation(data))
 	}
 	if err != nil || len(pkt.Payload) == 0 {
 		return
@@ -222,7 +235,6 @@ func (m *CallManager) resetVideoRecvLocked() {
 	m.videoSelfSsrc = 0
 	m.videoSendInit = false
 	m.videoSendSeq = 0
-	m.videoSendXseq = 0
 	m.videoTxFrames, m.videoTxBytes, m.videoTxKeyframes = 0, 0, 0
 	m.videoTxStart = time.Time{}
 }
@@ -276,25 +288,6 @@ func (m *CallManager) SendPeerVideo(payload []byte, ts uint32, marker bool) {
 	hdr := media.NewRtpHeader(pt, m.videoSendSeq, ts, m.videoSelfSsrc)
 	hdr.Marker = marker
 	m.videoSendSeq++
-	// WhatsApp's official clients drop video that arrives without the native RTP header extension
-	// (profile 0xDEBE, one-byte-header elements: id3 MediaFrameInfo, id5 InitialBandwidth,
-	// id6 ShortOffset, id9 TransportSequence). Without it the peer never decodes our stream and
-	// shows a frozen image. MediaFrameInfo is 0x09 on a keyframe NAL, 0x01 on a delta.
-	mfi := byte(0x01)
-	if payloadIsKeyframeNAL(payload) {
-		mfi = 0x09
-	}
-	xseq := m.videoSendXseq
-	m.videoSendXseq++
-	hdr.Extension = true
-	hdr.ExtensionProfile = 0xDEBE
-	hdr.ExtensionData = []byte{
-		0x30, mfi,
-		0x51, 0x00, 0x00,
-		0x61, 0x00, 0x00,
-		0x91, byte(xseq >> 8), byte(xseq),
-		0x00,
-	}
 	ctx := m.videoSendSrtp
 	callID := ""
 	if m.currentCall != nil {

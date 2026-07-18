@@ -216,9 +216,15 @@ func (m *CallManager) onRelayData(data []byte) {
 	m.mu.Unlock()
 
 	// Non-audio RTP is WhatsApp video (H.264, PT 97): route it to the dedicated video pipeline
-	// so its SRTP ROC never collides with the audio session.
+	// so its SRTP ROC never collides with the audio session. Skip our own video echoed back by
+	// the relay so it never locks the video stream or feeds its CVO into the peer's rotation.
 	if pt != core.PayloadTypeWhatsAppOpus {
-		m.handleVideoPacket(data, ssrc)
+		m.extMu.Lock()
+		echo := m.declaredSelf[ssrc]
+		m.extMu.Unlock()
+		if !echo {
+			m.handleVideoPacket(data, ssrc)
+		}
 		return
 	}
 
