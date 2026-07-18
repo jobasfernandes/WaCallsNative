@@ -160,6 +160,10 @@ export const isMine = (call: CallSummary): boolean =>
   call.owner === getClientId();
 
 export const registerOwnConnection = (id: string, conn: OpenCall): void => {
+  // Close any prior connection for this call before replacing it, so a re-attach (resume after a
+  // dropped leg) releases the old mic/camera tracks instead of leaking them (camera stays "in use").
+  const old = useCalls.getState().ownConnections.get(id);
+  if (old && old !== conn) old.close();
   useCalls.setState((s) => {
     const next = new Map(s.ownConnections);
     next.set(id, conn);

@@ -96,11 +96,22 @@ export const openCall = async (
       });
   });
 
-  const { sdp_answer } = await apiPost<{ sdp_answer: string }>(
-    `/api/sessions/${sid}/calls/${callId}/webrtc`,
-    { sdp_offer: pc.localDescription!.sdp },
-  );
-  await pc.setRemoteDescription({ type: "answer", sdp: sdp_answer });
+  try {
+    const { sdp_answer } = await apiPost<{ sdp_answer: string }>(
+      `/api/sessions/${sid}/calls/${callId}/webrtc`,
+      { sdp_offer: pc.localDescription!.sdp },
+    );
+    await pc.setRemoteDescription({ type: "answer", sdp: sdp_answer });
+  } catch (err) {
+    // Release the camera we captured above; the caller's catch only stops the mic it owns.
+    try {
+      localVideoStream?.getTracks().forEach((t) => t.stop());
+    } catch {}
+    try {
+      pc.close();
+    } catch {}
+    throw err;
+  }
 
   return {
     pc,
