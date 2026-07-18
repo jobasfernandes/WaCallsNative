@@ -257,8 +257,16 @@ func (m *CallManager) setupIncomingMedia(call *CallInfo, relayData *core.RelayDa
 			m.replaceRtpSession(media.NewWhatsAppOpusSession(newSelf))
 		}
 		if peer := firstPeerDevice(relayData.ParticipantJids, ourBase); peer != "" {
-			m.peerSsrcs = []uint32{media.GenerateSecureSsrc(call.CallID, ensureDeviceJid(peer), 0)}
+			peerDeviceJid := ensureDeviceJid(peer)
+			m.peerSsrcs = []uint32{media.GenerateSecureSsrc(call.CallID, peerDeviceJid, 0)}
 			m.actualPeerSet = true
+			// For an inbound video call the peer sends its camera on SSRC counter 2 of the same
+			// device. Unlike audio, we never subscribe to it until handleVideoPacket locks, but on
+			// inbound the relay never forwards the base layer to bootstrap that lock. Subscribe to
+			// the derived peer video SSRC now so the relay delivers the peer's video from the start.
+			if call.MediaType == core.CallMediaTypeVideo {
+				m.relay.SetPeerVideoSsrc(media.GenerateSecureSsrc(call.CallID, peerDeviceJid, 2))
+			}
 		}
 	}
 	m.relay.SetSubscriptionSsrc(firstSsrc(m.peerSsrcs))
