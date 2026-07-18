@@ -2,23 +2,61 @@ package call
 
 import (
 	"log/slog"
+	"sync"
 	"testing"
+	"time"
 
 	"wacalls/internal/voip/core"
 	"wacalls/internal/voip/media"
 )
 
 // capRelay records outbound broadcasts and video-SSRC bookkeeping without a real transport.
+// It is mutex-guarded because SendPeerVideo declares the video SSRC via a goroutine
+// (go ResendSubscriptions), which races the test's reads otherwise.
 type capRelay struct {
 	fakeRelay
+	mu        sync.Mutex
 	sent      [][]byte
 	videoSsrc uint32
 	resend    int
 }
 
-func (r *capRelay) Broadcast(data []byte)    { r.sent = append(r.sent, append([]byte(nil), data...)) }
-func (r *capRelay) SetVideoSsrc(ssrc uint32) { r.videoSsrc = ssrc }
-func (r *capRelay) ResendSubscriptions()     { r.resend++ }
+func (r *capRelay) Broadcast(data []byte) {
+	r.mu.Lock()
+	r.sent = append(r.sent, append([]byte(nil), data...))
+	r.mu.Unlock()
+}
+
+func (r *capRelay) SetVideoSsrc(ssrc uint32) {
+	r.mu.Lock()
+	r.videoSsrc = ssrc
+	r.mu.Unlock()
+}
+
+func (r *capRelay) ResendSubscriptions() {
+	r.mu.Lock()
+	r.resend++
+	r.mu.Unlock()
+}
+
+func (r *capRelay) snapshot() (sent [][]byte, videoSsrc uint32, resend int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([][]byte(nil), r.sent...), r.videoSsrc, r.resend
+}
+
+// waitResend polls until the async ResendSubscriptions goroutine has run, or fails.
+func (r *capRelay) waitResend(t *testing.T) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if _, _, resend := r.snapshot(); resend > 0 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatal("ResendSubscriptions was never called for the video uplink")
+}
 
 func newVideoSendCM(t *testing.T, relay *capRelay) (*CallManager, core.SrtpKeyingMaterial) {
 	t.Helper()
@@ -49,23 +87,22 @@ func TestSendPeerVideoBuildsHeaderAndProtects(t *testing.T) {
 
 	m.SendPeerVideo([]byte{0x65, 0x11, 0x22}, 9000, false)
 	m.SendPeerVideo([]byte{0x41, 0x33}, 9000, true)
+	relay.waitResend(t)
 
-	if len(relay.sent) != 2 {
-		t.Fatalf("want 2 broadcasts, got %d", len(relay.sent))
-	}
-	if relay.videoSsrc == 0 || relay.resend == 0 {
-		t.Fatalf("expected video ssrc declared and subscriptions resent (ssrc=%d resend=%d)", relay.videoSsrc, relay.resend)
+	sent, videoSsrc, _ := relay.snapshot()
+	if len(sent) != 2 {
+		t.Fatalf("want 2 broadcasts, got %d", len(sent))
 	}
 	wantSsrc := media.GenerateSecureSsrc(m.currentCall.CallID, m.videoOurDeviceJid, 2)
-	if relay.videoSsrc != wantSsrc {
-		t.Fatalf("video ssrc = %d want %d", relay.videoSsrc, wantSsrc)
+	if videoSsrc != wantSsrc {
+		t.Fatalf("video ssrc = %d want %d", videoSsrc, wantSsrc)
 	}
 
 	recvCtx, err := media.NewSrtpContext(peerRecvKM, core.SRTPRecvAuthTagLen)
 	if err != nil {
 		t.Fatalf("peer recv ctx: %v", err)
 	}
-	pkt, err := recvCtx.Unprotect(relay.sent[0])
+	pkt, err := recvCtx.Unprotect(sent[0])
 	if err != nil {
 		t.Fatalf("peer failed to decrypt our video: %v", err)
 	}
@@ -83,7 +120,7 @@ func TestSendPeerVideoBuildsHeaderAndProtects(t *testing.T) {
 	}
 	seq0 := pkt.Header.SequenceNumber
 
-	pkt1, err := recvCtx.Unprotect(relay.sent[1])
+	pkt1, err := recvCtx.Unprotect(sent[1])
 	if err != nil {
 		t.Fatalf("decrypt pkt1: %v", err)
 	}
@@ -100,7 +137,7 @@ func TestSendPeerVideoGatedOnVideoCall(t *testing.T) {
 	m, _ := newVideoSendCM(t, relay)
 	m.localVideo = false
 	m.SendPeerVideo([]byte{0x65, 0x11}, 9000, true)
-	if len(relay.sent) != 0 {
-		t.Fatalf("audio-only call must not broadcast video, got %d", len(relay.sent))
+	if sent, _, _ := relay.snapshot(); len(sent) != 0 {
+		t.Fatalf("audio-only call must not broadcast video, got %d", len(sent))
 	}
 }
