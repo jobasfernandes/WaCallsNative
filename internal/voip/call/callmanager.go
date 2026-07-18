@@ -256,17 +256,19 @@ func (m *CallManager) setupIncomingMedia(call *CallInfo, relayData *core.RelayDa
 			m.selfSsrc = newSelf
 			m.replaceRtpSession(media.NewWhatsAppOpusSession(newSelf))
 		}
+		if call.MediaType == core.CallMediaTypeVideo {
+			// Declare our video SSRC (counter 2) to the relay up front, so the very first allocate
+			// at relay-connect lists a video slot in the self SSRC list. The relay uses that to
+			// treat us as a video participant and bridge the peer's video downlink to us. Deriving
+			// it lazily on the first camera frame is too late: the initial allocate would advertise
+			// audio only and the peer's video would never be forwarded (probe never fires inbound).
+			// SendPeerVideo re-derives the identical SSRC; the relay field set here is load-bearing
+			// and survives the resetVideoRecvLocked inside initSrtpKeysLocked below.
+			m.relay.SetVideoSsrc(media.GenerateSecureSsrc(call.CallID, ourDeviceJid, 2))
+		}
 		if peer := firstPeerDevice(relayData.ParticipantJids, ourBase); peer != "" {
-			peerDeviceJid := ensureDeviceJid(peer)
-			m.peerSsrcs = []uint32{media.GenerateSecureSsrc(call.CallID, peerDeviceJid, 0)}
+			m.peerSsrcs = []uint32{media.GenerateSecureSsrc(call.CallID, ensureDeviceJid(peer), 0)}
 			m.actualPeerSet = true
-			// For an inbound video call the peer sends its camera on SSRC counter 2 of the same
-			// device. Unlike audio, we never subscribe to it until handleVideoPacket locks, but on
-			// inbound the relay never forwards the base layer to bootstrap that lock. Subscribe to
-			// the derived peer video SSRC now so the relay delivers the peer's video from the start.
-			if call.MediaType == core.CallMediaTypeVideo {
-				m.relay.SetPeerVideoSsrc(media.GenerateSecureSsrc(call.CallID, peerDeviceJid, 2))
-			}
 		}
 	}
 	m.relay.SetSubscriptionSsrc(firstSsrc(m.peerSsrcs))
