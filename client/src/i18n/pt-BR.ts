@@ -122,6 +122,8 @@ export const ptBR: Messages = {
   },
   incoming: {
     title: "Chamada recebida",
+    videoTitle: "Chamada de vídeo recebida",
+    videoCall: "Chamada de vídeo",
     accept: "Atender",
     reject: "Recusar",
   },
