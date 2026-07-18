@@ -147,6 +147,7 @@ func (m *CallManager) onRelayData(data []byte) {
 		recvSrtcp := m.recvSrtcp
 		recvStats := m.recvStats
 		selfSsrc := m.selfSsrc
+		videoSelfSsrc := m.videoSelfSsrc
 		obs := m.observer
 		callID := ""
 		if m.currentCall != nil {
@@ -179,6 +180,12 @@ func (m *CallManager) onRelayData(data []byte) {
 		for _, b := range in.Blocks {
 			if b.SSRC == selfSsrc && b.LSR != 0 {
 				recvStats.NotePeerReportBlock(b.LSR, b.DLSR, b.FractionLost, now)
+			}
+			// Diagnostic: the peer's reported loss on OUR video SSRC. A high fraction here (our
+			// video -> peer) while our own recv loss is 0 is the frozen-video signature.
+			if videoSelfSsrc != 0 && b.SSRC == videoSelfSsrc && b.FractionLost > 0 {
+				m.log.Info("peer reports loss on our video", "call_id", callID,
+					"fraction_lost_pct", float64(b.FractionLost)*100/256, "cumulative_lost", b.CumulativeLost)
 			}
 		}
 		q := recvStats.QualitySnapshot(now)

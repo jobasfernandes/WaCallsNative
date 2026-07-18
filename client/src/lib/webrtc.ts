@@ -56,15 +56,18 @@ export const openCall = async (
     }
   } catch {}
   if (localVideoStream) {
-    // A light stream (320x240, 180 kbps, 15 fps) freezes less on WhatsApp's loss-sensitive relay.
+    // Keep the stream light so keyframes fit in few packets and survive the WhatsApp relay's loss.
+    // Chrome gets no bandwidth feedback from the relay, so it never backs off on its own; a lost
+    // keyframe packet freezes the peer's decoder. 80 kbps at 15 fps keeps keyframes small.
     await videoTx.sender.replaceTrack(localVideoStream.getVideoTracks()[0]);
     try {
       const params = videoTx.sender.getParameters();
       if (!params.encodings || params.encodings.length === 0) {
         params.encodings = [{}];
       }
-      params.encodings[0].maxBitrate = 180_000;
+      params.encodings[0].maxBitrate = 80_000;
       params.encodings[0].maxFramerate = 15;
+      params.degradationPreference = "maintain-framerate";
       await videoTx.sender.setParameters(params);
     } catch {}
   }
