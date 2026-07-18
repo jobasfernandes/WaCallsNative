@@ -1,5 +1,12 @@
 import { useMemo, useState } from "react";
-import { Pencil, Phone, RefreshCw, Search, UserPlus } from "lucide-react";
+import {
+  Pencil,
+  Phone,
+  RefreshCw,
+  Search,
+  UserPlus,
+  Video,
+} from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -21,8 +28,8 @@ export const ContactsPage = ({ sid }: { sid: string }) => {
   const setView = useNav((s) => s.setView);
   const startCall = useStartCall(sid, micId);
 
-  const call = (phone: string) => {
-    startCall.mutate({ phone });
+  const call = (phone: string, video = false) => {
+    startCall.mutate({ phone, video });
     setView("console");
   };
   const { data, isLoading, isError, isFetching, refetch } = useContacts(
@@ -133,6 +140,16 @@ export const ContactsPage = ({ sid }: { sid: string }) => {
                     aria-label={t.contacts.editAria(c.name)}
                   >
                     <Pencil className="h-4 w-4" />
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    size="icon"
+                    onClick={() => call(c.phone, true)}
+                    disabled={startCall.isPending}
+                    aria-label={t.contacts.videoCallAria(c.name)}
+                  >
+                    <Video className="h-4 w-4" />
                   </Button>
                   <Button
                     type="button"

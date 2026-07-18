@@ -1,5 +1,14 @@
 import { useEffect, useRef, useState } from "react";
-import { Check, Mic, MicOff, PhoneOff, RotateCcw, WifiOff } from "lucide-react";
+import {
+  Check,
+  Mic,
+  MicOff,
+  PhoneOff,
+  RotateCcw,
+  Video,
+  VideoOff,
+  WifiOff,
+} from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { StatusBadge } from "@/components/ui/status-badge";
 import { Button } from "@/components/ui/button";
@@ -273,8 +282,17 @@ export const CallCard = ({ call }: { call: CallSummary }) => {
   );
   const audioRef = useRef<HTMLAudioElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const localVideoRef = useRef<HTMLVideoElement>(null);
   const [hasVideo, setHasVideo] = useState(false);
   const [rotation, setRotation] = useState(0);
+  const hasLocalCamera = !!conn?.localVideoStream;
+  const [cameraOn, setCameraOn] = useState(true);
+  const immersive = hasVideo && !detached;
+
+  const toggleCamera = () => {
+    if (!conn) return;
+    setCameraOn(conn.toggleCamera());
+  };
 
   const toggleMute = () => {
     if (!conn) return;
@@ -350,6 +368,12 @@ export const CallCard = ({ call }: { call: CallSummary }) => {
     };
   }, [conn]);
 
+  useEffect(() => {
+    if (localVideoRef.current) {
+      localVideoRef.current.srcObject = conn?.localVideoStream ?? null;
+    }
+  }, [conn, immersive]);
+
   return (
     <Card>
       <CardContent className="space-y-3 p-4">
@@ -374,21 +398,125 @@ export const CallCard = ({ call }: { call: CallSummary }) => {
               </StatusBadge>
             </div>
           </div>
-          <div className="flex items-center gap-2">
-            {call.status === "connected" && conn && (
+          {!immersive && (
+            <div className="flex items-center gap-2">
+              {call.status === "connected" && conn && (
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Button
+                      variant={muted ? "secondary" : "outline"}
+                      size="icon"
+                      onClick={toggleMute}
+                      aria-label={muted ? t.calls.unmute : t.calls.mute}
+                      aria-pressed={muted}
+                    >
+                      {muted ? (
+                        <MicOff className="h-4 w-4" />
+                      ) : (
+                        <Mic className="h-4 w-4" />
+                      )}
+                    </Button>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    {muted ? t.calls.unmute : t.calls.mute}
+                  </TooltipContent>
+                </Tooltip>
+              )}
               <Tooltip>
                 <TooltipTrigger asChild>
                   <Button
-                    variant={muted ? "secondary" : "outline"}
+                    variant="destructive"
                     size="icon"
+                    onClick={() =>
+                      endCall.mutate({
+                        sid: call.sessionId,
+                        callId: call.callId,
+                      })
+                    }
+                    aria-label={t.calls.endCall}
+                  >
+                    <PhoneOff className="h-4 w-4" />
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>{t.calls.endCall}</TooltipContent>
+              </Tooltip>
+            </div>
+          )}
+        </div>
+        <div
+          className={
+            immersive
+              ? "relative overflow-hidden rounded-xl border border-border/60 bg-black"
+              : "hidden"
+          }
+        >
+          <video
+            ref={videoRef}
+            autoPlay
+            playsInline
+            muted
+            className="mx-auto block max-h-[60vh] w-full object-contain"
+            style={
+              rotation
+                ? { transform: `rotate(${cvoRotationToCss(rotation)}deg)` }
+                : undefined
+            }
+          />
+          {hasLocalCamera && (
+            <video
+              ref={localVideoRef}
+              autoPlay
+              playsInline
+              muted
+              className="absolute bottom-16 right-3 aspect-video w-24 rounded-lg border border-white/25 object-cover shadow-lg sm:bottom-20 sm:w-36"
+              style={{ transform: "scaleX(-1)" }}
+            />
+          )}
+          {peerMuted && (
+            <div className="absolute left-3 top-3 flex items-center gap-1.5 rounded-full bg-black/55 px-2.5 py-1 text-xs text-white/90 backdrop-blur">
+              <MicOff className="h-3.5 w-3.5" />
+              {t.calls.peerMuted}
+            </div>
+          )}
+          <div className="absolute inset-x-0 bottom-0 flex items-center justify-center gap-3 bg-gradient-to-t from-black/70 to-transparent p-3">
+            {hasLocalCamera && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="secondary"
+                    size="icon"
+                    className="h-11 w-11 rounded-full border-none bg-white/15 text-white hover:bg-white/25"
+                    onClick={toggleCamera}
+                    aria-label={cameraOn ? t.calls.cameraOff : t.calls.cameraOn}
+                    aria-pressed={!cameraOn}
+                  >
+                    {cameraOn ? (
+                      <Video className="h-5 w-5" />
+                    ) : (
+                      <VideoOff className="h-5 w-5" />
+                    )}
+                  </Button>
+                </TooltipTrigger>
+                <TooltipContent>
+                  {cameraOn ? t.calls.cameraOff : t.calls.cameraOn}
+                </TooltipContent>
+              </Tooltip>
+            )}
+            {conn && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <Button
+                    variant="secondary"
+                    size="icon"
+                    className="h-11 w-11 rounded-full border-none bg-white/15 text-white hover:bg-white/25"
                     onClick={toggleMute}
                     aria-label={muted ? t.calls.unmute : t.calls.mute}
                     aria-pressed={muted}
                   >
                     {muted ? (
-                      <MicOff className="h-4 w-4" />
+                      <MicOff className="h-5 w-5" />
                     ) : (
-                      <Mic className="h-4 w-4" />
+                      <Mic className="h-5 w-5" />
                     )}
                   </Button>
                 </TooltipTrigger>
@@ -402,37 +530,18 @@ export const CallCard = ({ call }: { call: CallSummary }) => {
                 <Button
                   variant="destructive"
                   size="icon"
+                  className="h-11 w-11 rounded-full"
                   onClick={() =>
                     endCall.mutate({ sid: call.sessionId, callId: call.callId })
                   }
                   aria-label={t.calls.endCall}
                 >
-                  <PhoneOff className="h-4 w-4" />
+                  <PhoneOff className="h-5 w-5" />
                 </Button>
               </TooltipTrigger>
               <TooltipContent>{t.calls.endCall}</TooltipContent>
             </Tooltip>
           </div>
-        </div>
-        <div
-          className={
-            hasVideo && !detached
-              ? "overflow-hidden rounded-lg border border-border/60 bg-black"
-              : "hidden"
-          }
-        >
-          <video
-            ref={videoRef}
-            autoPlay
-            playsInline
-            muted
-            className="mx-auto block max-h-[55vh] w-full object-contain"
-            style={
-              rotation
-                ? { transform: `rotate(${cvoRotationToCss(rotation)}deg)` }
-                : undefined
-            }
-          />
         </div>
         {call.status === "reconnecting" && <ReconnectingNotice />}
         {marks && marks.length > 0 && (
@@ -459,12 +568,14 @@ export const CallCard = ({ call }: { call: CallSummary }) => {
             )}
           </div>
         ) : (
-          <>
-            <Meter label={t.calls.mic} db={micDb} />
-            <Meter label={t.calls.peer} db={peerDb} />
-          </>
+          !immersive && (
+            <>
+              <Meter label={t.calls.mic} db={micDb} />
+              <Meter label={t.calls.peer} db={peerDb} />
+            </>
+          )
         )}
-        {peerMuted && (
+        {peerMuted && !immersive && (
           <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
             <MicOff className="h-3.5 w-3.5" />
             {t.calls.peerMuted}

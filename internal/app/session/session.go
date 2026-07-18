@@ -203,6 +203,11 @@ func (s *Session) wireCall(callID string, cm *call.CallManager) {
 			b.SendRotation(deg)
 		}
 	}
+	cm.OnPeerKeyframeRequest = func(callID string) {
+		if b := s.getBridge(callID); b != nil {
+			b.RequestKeyframe()
+		}
+	}
 }
 
 func (s *Session) handleEvent(rawEvt any) {

@@ -124,6 +124,22 @@ func (m *CallManager) onRelayData(data []byte) {
 		return
 	}
 	if transport.IsRtcpPacket(data) {
+		// A peer keyframe request (PSFB PLI fmt=1 or FIR fmt=4, PT 206) forwards to the browser
+		// so its encoder emits an IDR. Checked before the SRTCP guard: the header is in the clear.
+		if len(data) >= 2 && data[1] == 206 {
+			if fmtField := data[0] & 0x1f; fmtField == 1 || fmtField == 4 {
+				m.mu.Lock()
+				callID := ""
+				if m.currentCall != nil {
+					callID = m.currentCall.CallID
+				}
+				cb := m.OnPeerKeyframeRequest
+				m.mu.Unlock()
+				if cb != nil && callID != "" {
+					cb(callID)
+				}
+			}
+		}
 		senderSsrc, _ := media.ParseRTCPSenderSSRC(data)
 		m.notePeerMedia(senderSsrc)
 

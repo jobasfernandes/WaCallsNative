@@ -145,6 +145,7 @@ export const ensureCallsWired = (): void => {
           peerName: ev.peerName,
           peerPhotoUrl: ev.peerPhotoUrl,
           offeredAt: ev.offeredAt,
+          video: ev.video,
         },
       });
     } else if (ev.type === "incoming-claimed") {

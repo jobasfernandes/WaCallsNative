@@ -1,8 +1,9 @@
 import { apiPost, apiDelete } from "@/lib/api";
 
-export const startCall = (sid: string, phone: string) =>
+export const startCall = (sid: string, phone: string, video = false) =>
   apiPost<{ call: { callId: string } }>(`/api/sessions/${sid}/calls`, {
     phone,
+    video,
   });
 
 export const acceptCall = (sid: string, callId: string) =>

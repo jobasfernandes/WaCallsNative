@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/pion/webrtc/v4"
+	pionmedia "github.com/pion/webrtc/v4/pkg/media"
 )
 
 // makeBrowserOffer simulates the browser: it opens the "pcm" data channel and
@@ -117,6 +118,73 @@ func TestNewBridgeNoVideoTrackForAudioOnlyOffer(t *testing.T) {
 	}
 	if strings.Contains(answer, "m=video") {
 		t.Fatalf("audio-only answer must not carry m=video:\n%s", answer)
+	}
+}
+
+// TestBridgeReceivesBrowserVideo simulates a browser sending camera H264 over a sendrecv
+// transceiver and asserts the bridge surfaces the RTP payloads via OnBrowserVideo.
+func TestBridgeReceivesBrowserVideo(t *testing.T) {
+	browser, err := videoCapableAPI(t).NewPeerConnection(webrtc.Configuration{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = browser.Close() }()
+	if _, err := browser.CreateDataChannel(pcmChannelLabel, nil); err != nil {
+		t.Fatal(err)
+	}
+	track, err := webrtc.NewTrackLocalStaticSample(
+		webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeH264}, "video", "browser")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := browser.AddTrack(track); err != nil {
+		t.Fatal(err)
+	}
+	offer, err := browser.CreateOffer(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gather := webrtc.GatheringCompletePromise(browser)
+	if err := browser.SetLocalDescription(offer); err != nil {
+		t.Fatal(err)
+	}
+	<-gather
+
+	got := make(chan int, 1)
+	br, answer, err := NewBridge(videoCapableAPI(t), browser.LocalDescription().SDP, slog.Default())
+	if err != nil {
+		t.Fatalf("NewBridge: %v", err)
+	}
+	defer br.Close()
+	br.OnBrowserVideo = func(payload []byte, _ uint32, _ bool) {
+		select {
+		case got <- len(payload):
+		default:
+		}
+	}
+	if err := browser.SetRemoteDescription(webrtc.SessionDescription{Type: webrtc.SDPTypeAnswer, SDP: answer}); err != nil {
+		t.Fatalf("browser SetRemoteDescription: %v", err)
+	}
+
+	stop := make(chan struct{})
+	defer close(stop)
+	go func() {
+		au := []byte{0x67, 0x42, 0x00, 0x0a, 0x00, 0x00, 0x00, 0x01, 0x65, 0x01, 0x02, 0x03}
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				_ = track.WriteSample(pionmedia.Sample{Data: au, Duration: 33 * time.Millisecond})
+				time.Sleep(20 * time.Millisecond)
+			}
+		}
+	}()
+
+	select {
+	case <-got:
+	case <-time.After(15 * time.Second):
+		t.Fatal("OnBrowserVideo never fired")
 	}
 }
 

@@ -51,10 +51,21 @@ type CallManager struct {
 	peerVideoOrientation int
 
 	recvKM        core.SrtpKeyingMaterial
+	sendKM        core.SrtpKeyingMaterial
 	videoSrtp     *media.SrtpContext
 	videoSsrc     uint32
 	videoAsm      *videoAssembler
 	videoRotation int
+	videoRecvPT   uint8
+
+	videoSelfSsrc     uint32
+	videoOurDeviceJid string
+	videoSendSrtp     *media.SrtpContext
+	videoSendSeq      uint16
+	videoSendInit     bool
+	videoTxFrames     int
+	videoTxBytes      int
+	videoTxStart      time.Time
 
 	timeouts      Timeouts
 	watchdogTick  time.Duration
@@ -96,6 +107,7 @@ type CallManager struct {
 	OnVideoUpgradeRequest func(callID string)
 	OnPeerVideo           func(callID string, annexB []byte, dur time.Duration)
 	OnPeerVideoRotation   func(callID string, deg int)
+	OnPeerKeyframeRequest func(callID string)
 }
 
 func NewCallManager(sock signaling.Socket, log *slog.Logger, exts ...engine.Extension) *CallManager {
