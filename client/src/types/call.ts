@@ -20,6 +20,7 @@ export type IncomingPayload = {
   peerName?: string;
   peerPhotoUrl?: string;
   offeredAt: number;
+  video?: boolean;
 };
 
 export type QualitySample = {

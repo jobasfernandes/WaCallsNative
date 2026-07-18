@@ -9,7 +9,7 @@ import { useT } from "@/hooks/useT";
 export const useAcceptCall = (micId: string | null) => {
   const t = useT();
   return useMutation({
-    mutationFn: async (vars: { sid: string; callId: string }) => {
+    mutationFn: async (vars: { sid: string; callId: string; video?: boolean }) => {
       const mic = await acquireMic(micId);
       let callId: string;
       try {
@@ -20,7 +20,7 @@ export const useAcceptCall = (micId: string | null) => {
         throw err;
       }
       try {
-        const conn = await openCall(vars.sid, callId, mic);
+        const conn = await openCall(vars.sid, callId, mic, vars.video ?? false);
         registerOwnConnection(callId, conn);
       } catch (wrtcErr) {
         mic.getTracks().forEach((track) => track.stop());

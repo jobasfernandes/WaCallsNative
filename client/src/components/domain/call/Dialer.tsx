@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Delete, Phone } from "lucide-react";
+import { Delete, Phone, Video } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
@@ -16,10 +16,10 @@ export const Dialer = ({ sid }: { sid: string }) => {
   const startCall = useStartCall(sid, micId);
   const t = useT();
 
-  const submit = () => {
+  const submit = (video = false) => {
     if (!phone.trim() || startCall.isPending) return;
     startCall.mutate(
-      { phone: phone.trim() },
+      { phone: phone.trim(), video },
       { onSuccess: () => setPhone("") },
     );
   };
@@ -36,7 +36,7 @@ export const Dialer = ({ sid }: { sid: string }) => {
             value={phone}
             onChange={(e) => setPhone(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === "Enter") submit();
+              if (e.key === "Enter") submit(false);
             }}
             placeholder={t.dialer.phonePlaceholder}
             inputMode="tel"
@@ -55,14 +55,25 @@ export const Dialer = ({ sid }: { sid: string }) => {
         </div>
         <ContactPicker sid={sid} onPick={(p) => setPhone(p)} />
         <DialPad onKey={(c) => setPhone((p) => p + c)} />
-        <Button
-          className="w-full"
-          onClick={submit}
-          disabled={startCall.isPending || !phone.trim()}
-        >
-          <Phone className="h-4 w-4" />
-          {startCall.isPending ? t.dialer.calling : t.dialer.call}
-        </Button>
+        <div className="flex gap-2">
+          <Button
+            className="flex-1"
+            onClick={() => submit(false)}
+            disabled={startCall.isPending || !phone.trim()}
+          >
+            <Phone className="h-4 w-4" />
+            {startCall.isPending ? t.dialer.calling : t.dialer.call}
+          </Button>
+          <Button
+            variant="secondary"
+            onClick={() => submit(true)}
+            disabled={startCall.isPending || !phone.trim()}
+            aria-label={t.dialer.videoCall}
+          >
+            <Video className="h-4 w-4" />
+            {t.dialer.videoCall}
+          </Button>
+        </div>
       </CardContent>
     </Card>
   );

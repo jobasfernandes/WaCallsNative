@@ -9,18 +9,18 @@ import { useT } from "@/hooks/useT";
 export const useStartCall = (sid: string, micId: string | null) => {
   const t = useT();
   return useMutation({
-    mutationFn: async (vars: { phone: string }) => {
+    mutationFn: async (vars: { phone: string; video?: boolean }) => {
       const mic = await acquireMic(micId);
       let callId: string;
       try {
-        const { call } = await startCall(sid, vars.phone);
+        const { call } = await startCall(sid, vars.phone, vars.video);
         callId = call.callId;
       } catch (err) {
         mic.getTracks().forEach((track) => track.stop());
         throw err;
       }
       try {
-        const conn = await openCall(sid, callId, mic);
+        const conn = await openCall(sid, callId, mic, vars.video ?? false);
         registerOwnConnection(callId, conn);
       } catch (err) {
         mic.getTracks().forEach((track) => track.stop());

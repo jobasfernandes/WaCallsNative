@@ -53,6 +53,7 @@ export type BrokerEvent =
       peerName?: string;
       peerPhotoUrl?: string;
       offeredAt: number;
+      video?: boolean;
     }
   | { type: "incoming-claimed"; sessionId: string; id: string; owner: string }
   | {

@@ -125,6 +125,7 @@ export const IncomingCallModal = () => {
               accept.mutate({
                 sid: incoming.sessionId,
                 callId: incoming.callId,
+                video: incoming.video,
               })
             }
             aria-label={t.incoming.accept}
