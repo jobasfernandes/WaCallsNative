@@ -10,9 +10,10 @@ WaCalls speaks the WhatsApp 1:1 video signaling protocol: it advertises video in
 offer/accept, drives mid-call upgrade and downgrade transitions, and answers the peer's
 transitions with the typed ack WhatsApp requires.
 
-**Scope note:** this is signaling only. No video media (H.264 RTP) is carried yet, so a
-peer that answers or accepts sees no picture from WaCalls until the media legs land. The
-state machine, the wire protocol, and the API are complete and correct on their own.
+**Scope note:** this doc is the signaling layer. The inbound media legs (H.264 receive +
+browser display) landed and are documented in [video-media.md](./video-media.md), including
+the WhatsApp downlink-bitrate limitation. WaCalls still sends no video of its own (receive
+only). The state machine, the wire protocol, and the API here are complete on their own.
 
 ## Overview
 
@@ -98,15 +99,17 @@ A video preaccept uses the audio **offer** blob (ending `13`), not the preaccept
   stanzas from any other device are ignored (else a stale sibling device could drive the
   flow).
 
-## Interim behavior (until the media legs land)
+## Current behavior
 
-- Inbound upgrade request: acked, surfaced on SSE, then auto-rejected by the session layer
-  so the peer does not wait on a black tile.
 - Inbound video call: rings with `video:true` in the SSE. It is answered advertising video
   (the preaccept carries the video capability `01 05 ff 09 e0 fa 13` and the accept a
   `<video enc="h.264" dec="H264,H265,AV1">` child) - the WhatsApp relay only bridges the video
   call's downlink once the callee advertises video, so answering audio-only left the receive
-  path silent (field-confirmed 2026-07-17: `rtt_samples` 0 → 13 after advertising video). Audio
-  is now two-way; the peer's video is received but not yet rendered (pixels need the H264 media
-  legs). No video is sent from our side yet, so the peer sees no picture from us.
+  path silent (field-confirmed 2026-07-17: `rtt_samples` 0 → 13 after advertising video).
+  Audio is two-way and the peer's video **renders** in the browser (see
+  [video-media.md](./video-media.md)), subject to the downlink-bitrate limitation documented
+  there. WaCalls sends no video of its own, so the peer sees no picture from us.
 - Outbound video call: fully signaled; the peer connects with two-way audio and no picture.
+- Inbound upgrade request on an audio call: acked, surfaced on SSE, then auto-rejected by the
+  session layer so the peer does not wait on a black tile (the media pipeline attaches on a
+  video-from-start answer, not yet on a mid-call upgrade).
