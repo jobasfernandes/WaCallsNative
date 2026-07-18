@@ -1,6 +1,7 @@
 package signaling
 
 import (
+	"fmt"
 	"strconv"
 
 	"wacalls/internal/voip/core"
@@ -88,6 +89,20 @@ func OfferVideoOrientation(offer *waBinary.Node) int {
 		}
 	}
 	return -1
+}
+
+// VideoNodeAttrs renders the offer's <video> node attributes for diagnostics, so we can see which
+// attribute (if any) actually carries the peer's camera rotation.
+func VideoNodeAttrs(offer *waBinary.Node) string {
+	if offer == nil {
+		return ""
+	}
+	for _, c := range wanode.NodeChildren(offer) {
+		if c.Tag == "video" {
+			return fmt.Sprintf("%v", c.Attrs)
+		}
+	}
+	return ""
 }
 
 func ParseVideoState(inner *waBinary.Node) (state, orientation int) {

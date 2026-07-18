@@ -48,6 +48,7 @@ func (m *CallManager) HandleCallOffer(ctx context.Context, node *waBinary.Node, 
 	// not in the RTP extension), so we can render the peer's video upright.
 	m.log.Info("incoming offer media classified", "call_id", callID,
 		"video", mediaType == core.CallMediaTypeVideo, "orientation", orient,
+		"video_attrs", signaling.VideoNodeAttrs(info.InnerNode),
 		"children", childTagSummary(info.InnerNode))
 
 	m.mu.Lock()
