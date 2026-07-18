@@ -86,6 +86,8 @@ export type Messages = {
     endCall: string;
     mute: string;
     unmute: string;
+    cameraOn: string;
+    cameraOff: string;
     peerMuted: string;
     reconnectDropped: string;
     reconnectingAudio: string;
@@ -95,6 +97,7 @@ export type Messages = {
     title: string;
     phonePlaceholder: string;
     call: string;
+    videoCall: string;
     calling: string;
     backspace: string;
     defaultMic: string;
