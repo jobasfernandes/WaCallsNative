@@ -94,6 +94,7 @@ export const en: Messages = {
     unmute: "Unmute microphone",
     cameraOn: "Turn camera on",
     cameraOff: "Turn camera off",
+    rotateVideo: "Rotate peer video",
     peerMuted: "Peer mic muted",
     reconnectDropped: "Audio disconnected",
     reconnectingAudio: "Reconnecting audio…",

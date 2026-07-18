@@ -5,6 +5,7 @@ import {
   MicOff,
   PhoneOff,
   RotateCcw,
+  RotateCw,
   Video,
   VideoOff,
   WifiOff,
@@ -285,6 +286,11 @@ export const CallCard = ({ call }: { call: CallSummary }) => {
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const [hasVideo, setHasVideo] = useState(false);
   const [rotation, setRotation] = useState(0);
+  // WhatsApp encodes the phone's camera as landscape and signals no reliable rotation for the
+  // browser (it lives in the proprietary WASM), so we default portrait phones (landscape pixels)
+  // to a 90 deg turn and let the operator adjust the direction by hand.
+  const [peerRotate, setPeerRotate] = useState(0);
+  const rotatedManually = useRef(false);
   const hasLocalCamera = !!conn?.localVideoStream;
   const [cameraOn, setCameraOn] = useState(true);
   // Show the immersive video stage as soon as this is a video call: either the peer's video has
@@ -458,12 +464,16 @@ export const CallCard = ({ call }: { call: CallSummary }) => {
             autoPlay
             playsInline
             muted
+            onLoadedMetadata={(e) => {
+              const v = e.currentTarget;
+              if (!rotatedManually.current && v.videoWidth > v.videoHeight) {
+                setPeerRotate(90);
+              }
+            }}
             className="mx-auto block max-h-[60vh] w-full object-contain"
-            style={
-              rotation
-                ? { transform: `rotate(${cvoRotationToCss(rotation)}deg)` }
-                : undefined
-            }
+            style={{
+              transform: `rotate(${(cvoRotationToCss(rotation) + peerRotate) % 360}deg)`,
+            }}
           />
           {hasLocalCamera && (
             <video
@@ -482,6 +492,23 @@ export const CallCard = ({ call }: { call: CallSummary }) => {
             </div>
           )}
           <div className="absolute inset-x-0 bottom-0 flex items-center justify-center gap-3 bg-gradient-to-t from-black/70 to-transparent p-3">
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="secondary"
+                  size="icon"
+                  className="h-11 w-11 rounded-full border-none bg-white/15 text-white hover:bg-white/25"
+                  onClick={() => {
+                    rotatedManually.current = true;
+                    setPeerRotate((r) => (r + 90) % 360);
+                  }}
+                  aria-label={t.calls.rotateVideo}
+                >
+                  <RotateCw className="h-5 w-5" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent>{t.calls.rotateVideo}</TooltipContent>
+            </Tooltip>
             {hasLocalCamera && (
               <Tooltip>
                 <TooltipTrigger asChild>

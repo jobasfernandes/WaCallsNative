@@ -88,6 +88,7 @@ export type Messages = {
     unmute: string;
     cameraOn: string;
     cameraOff: string;
+    rotateVideo: string;
     peerMuted: string;
     reconnectDropped: string;
     reconnectingAudio: string;

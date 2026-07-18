@@ -96,6 +96,7 @@ export const ptBR: Messages = {
     unmute: "Reativar microfone",
     cameraOn: "Ligar câmera",
     cameraOff: "Desligar câmera",
+    rotateVideo: "Girar vídeo do peer",
     peerMuted: "Mic do remoto silenciado",
     reconnectDropped: "Áudio desconectado",
     reconnectingAudio: "Reconectando áudio…",
