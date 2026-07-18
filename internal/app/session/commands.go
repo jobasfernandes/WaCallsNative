@@ -105,6 +105,9 @@ func (s *Session) AttachBrowser(callID, offerSDP string) (string, error) {
 		return "", err
 	}
 	bridge.OnBrowserPCM = func(pcm []float32) { cm.FeedCapturedPCM(pcm) }
+	bridge.OnBrowserVideo = func(payload []byte, ts uint32, marker bool) {
+		cm.SendPeerVideo(payload, ts, marker)
+	}
 	bridge.OnTerminalICE = func() { go s.onBridgeDetached(callID, bridge) }
 	s.setBridge(callID, bridge)
 	return answer, nil
