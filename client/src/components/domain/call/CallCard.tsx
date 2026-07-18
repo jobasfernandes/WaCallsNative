@@ -9,6 +9,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { attachMeter } from "@/lib/audio-meter";
+import { cvoRotationToCss } from "@/lib/call/video-codec";
 import { useCalls } from "@/stores/calls";
 import { useDevices } from "@/stores/devices";
 import { useEndCall } from "@/hooks/useEndCall";
@@ -271,6 +272,9 @@ export const CallCard = ({ call }: { call: CallSummary }) => {
     () => conn?.micStream.getAudioTracks().some((tr) => !tr.enabled) ?? false,
   );
   const audioRef = useRef<HTMLAudioElement>(null);
+  const videoRef = useRef<HTMLVideoElement>(null);
+  const [hasVideo, setHasVideo] = useState(false);
+  const [rotation, setRotation] = useState(0);
 
   const toggleMute = () => {
     if (!conn) return;
@@ -329,6 +333,22 @@ export const CallCard = ({ call }: { call: CallSummary }) => {
     if (!el || !outDeviceId || typeof el.setSinkId !== "function") return;
     el.setSinkId(outDeviceId).catch(() => {});
   }, [outDeviceId, conn]);
+
+  useEffect(() => {
+    const stream = conn?.remoteVideoStream;
+    if (!stream) return;
+    if (videoRef.current) videoRef.current.srcObject = stream;
+    const sync = () => setHasVideo(stream.getVideoTracks().length > 0);
+    stream.addEventListener("addtrack", sync);
+    stream.addEventListener("removetrack", sync);
+    conn.onRotation(setRotation);
+    const raf = requestAnimationFrame(sync);
+    return () => {
+      cancelAnimationFrame(raf);
+      stream.removeEventListener("addtrack", sync);
+      stream.removeEventListener("removetrack", sync);
+    };
+  }, [conn]);
 
   return (
     <Card>
@@ -393,6 +413,26 @@ export const CallCard = ({ call }: { call: CallSummary }) => {
               <TooltipContent>{t.calls.endCall}</TooltipContent>
             </Tooltip>
           </div>
+        </div>
+        <div
+          className={
+            hasVideo && !detached
+              ? "overflow-hidden rounded-lg border border-border/60 bg-black"
+              : "hidden"
+          }
+        >
+          <video
+            ref={videoRef}
+            autoPlay
+            playsInline
+            muted
+            className="mx-auto block max-h-[55vh] w-full object-contain"
+            style={
+              rotation
+                ? { transform: `rotate(${cvoRotationToCss(rotation)}deg)` }
+                : undefined
+            }
+          />
         </div>
         {call.status === "reconnecting" && <ReconnectingNotice />}
         {marks && marks.length > 0 && (

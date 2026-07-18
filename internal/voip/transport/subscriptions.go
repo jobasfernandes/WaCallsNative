@@ -22,13 +22,23 @@ func encodeProtobufLengthDelimited(fieldNumber int, data []byte) []byte {
 	return append(out, data...)
 }
 
-func BuildSenderSubscriptions(ssrc uint32) []byte {
-	inner := concat(
-		encodeProtobufVarintField(3, uint64(ssrc)),
-		encodeProtobufVarintField(5, 0),
-		encodeProtobufVarintField(6, 0),
-	)
-	return encodeProtobufLengthDelimited(1, inner)
+type SubEntry struct {
+	SSRC        uint32
+	StreamLayer int
+	PayloadType int
+}
+
+func BuildSenderSubscriptions(entries ...SubEntry) []byte {
+	var out []byte
+	for _, e := range entries {
+		inner := concat(
+			encodeProtobufVarintField(3, uint64(e.SSRC)),
+			encodeProtobufVarintField(5, uint64(e.StreamLayer)),
+			encodeProtobufVarintField(6, uint64(e.PayloadType)),
+		)
+		out = append(out, encodeProtobufLengthDelimited(1, inner)...)
+	}
+	return out
 }
 
 func BuildSSRCSubscriptionList(selfSsrcs, peerSsrcs []uint32, selfPid, peerPid int) []byte {

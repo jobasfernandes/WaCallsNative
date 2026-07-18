@@ -79,7 +79,7 @@ func (m *CallManager) HandleCallOffer(ctx context.Context, node *waBinary.Node, 
 
 	m.applyVoipSettings(info.InnerNode, callID)
 
-	preaccept := signaling.BuildPreacceptStanza(peerJid, callID, wanode.MustJID(creator), false)
+	preaccept := signaling.BuildPreacceptStanza(peerJid, callID, wanode.MustJID(creator), mediaType == core.CallMediaTypeVideo)
 	if err := m.sock.SendNode(ctx, preaccept); err != nil {
 		m.log.Error("send preaccept", "err", err)
 	}

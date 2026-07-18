@@ -18,6 +18,8 @@ import (
 type RelayTransport interface {
 	SetSsrc(ssrc uint32)
 	SetSubscriptionSsrc(ssrc uint32)
+	SetVideoSsrc(ssrc uint32)
+	SetPeerVideoSsrc(ssrc uint32)
 	SetStreamSsrcs(selfSsrcs, peerSsrcs []uint32)
 	SetOnConnected(fn func(ip string, port int))
 	SetOnReceive(fn func(data []byte))

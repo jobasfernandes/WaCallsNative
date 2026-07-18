@@ -114,12 +114,19 @@ func TestBuildAcceptStanzaVideo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	kids := offerChildren(t, node)
 	tags := []string{}
-	for _, c := range offerChildren(t, node) {
+	for _, c := range kids {
 		tags = append(tags, c.Tag)
 	}
-	if len(tags) < 2 || tags[0] != "audio" || tags[1] != "video" {
-		t.Errorf("video must follow audio in accept: %v", tags)
+	// The video advertisement sits at the END of the accept content (after encopt), matching
+	// the official client; audio stays first.
+	if len(tags) < 2 || tags[0] != "audio" || tags[len(tags)-1] != "video" {
+		t.Errorf("video must be the last accept child, after audio: %v", tags)
+	}
+	last := kids[len(kids)-1]
+	if wanode.AttrString(last.Attrs, "enc") != "h.264" || wanode.AttrString(last.Attrs, "dec") != "H264,H265,AV1" {
+		t.Errorf("accept video node attrs wrong: %+v", last.Attrs)
 	}
 }
 
@@ -141,20 +148,18 @@ func TestBuildPreacceptStanzaVideo(t *testing.T) {
 	peer := types.NewJID("62440234549366", types.HiddenUserServer)
 	creator := types.NewJID("111", types.HiddenUserServer)
 	node := BuildPreacceptStanza(peer, "C1", creator, true)
-	hasVideo := false
 	for _, c := range offerChildren(t, node) {
 		if c.Tag == "video" {
-			hasVideo = true
+			// The video preaccept advertises capability only (no <video> child), matching the
+			// official client.
+			t.Error("video preaccept must not carry a <video> child")
 		}
 		if c.Tag == "capability" {
-			want := []byte{0x01, 0x05, 0xf7, 0x09, 0xe4, 0xbb, 0x13}
+			want := []byte{0x01, 0x05, 0xff, 0x09, 0xe0, 0xfa, 0x13}
 			if !bytes.Equal(c.Content.([]byte), want) {
-				t.Errorf("video preaccept must carry the OFFER blob, got %x", c.Content.([]byte))
+				t.Errorf("video preaccept capability = %x, want %x", c.Content.([]byte), want)
 			}
 		}
-	}
-	if !hasVideo {
-		t.Error("no video child in video preaccept")
 	}
 }
 

@@ -50,6 +50,12 @@ type CallManager struct {
 	videoPendingIn       bool
 	peerVideoOrientation int
 
+	recvKM        core.SrtpKeyingMaterial
+	videoSrtp     *media.SrtpContext
+	videoSsrc     uint32
+	videoAsm      *videoAssembler
+	videoRotation int
+
 	timeouts      Timeouts
 	watchdogTick  time.Duration
 	watchdogStop  chan struct{}
@@ -88,6 +94,8 @@ type CallManager struct {
 
 	OnVideoState          func(callID string, snap core.VideoSnapshot)
 	OnVideoUpgradeRequest func(callID string)
+	OnPeerVideo           func(callID string, annexB []byte, dur time.Duration)
+	OnPeerVideoRotation   func(callID string, deg int)
 }
 
 func NewCallManager(sock signaling.Socket, log *slog.Logger, exts ...engine.Extension) *CallManager {
@@ -206,7 +214,7 @@ func (m *CallManager) AcceptCall(ctx context.Context, callID string) error {
 	m.mu.Unlock()
 
 	if key != nil {
-		acceptNode, err := signaling.BuildAcceptStanza(ctx, m.sock, callID, key, peer, creator, false)
+		acceptNode, err := signaling.BuildAcceptStanza(ctx, m.sock, callID, key, peer, creator, call.MediaType == core.CallMediaTypeVideo)
 		if err != nil {
 			m.log.Error("build accept failed", "err", err)
 		} else if err := m.sock.SendNode(ctx, acceptNode); err != nil {

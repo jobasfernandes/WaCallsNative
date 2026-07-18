@@ -9,8 +9,17 @@ import (
 )
 
 func buildBrowserAPI(udpPort int, externalIPs []string) (*webrtc.API, error) {
+	// Register the default codecs (H264 among them) so the browser leg can negotiate an
+	// H264 video track for downlink video; audio still rides the SCTP data channel, which
+	// needs no codec. pion clones the MediaEngine per PeerConnection, so one registration
+	// on the shared API is safe.
+	me := &webrtc.MediaEngine{}
+	if err := me.RegisterDefaultCodecs(); err != nil {
+		return nil, err
+	}
+
 	if udpPort <= 0 {
-		return webrtc.NewAPI(), nil
+		return webrtc.NewAPI(webrtc.WithMediaEngine(me)), nil
 	}
 
 	opts := []ice.UDPMuxFromPortOption{ice.UDPMuxFromPortWithNetworks(ice.NetworkTypeUDP4)}
@@ -35,7 +44,7 @@ func buildBrowserAPI(udpPort int, externalIPs []string) (*webrtc.API, error) {
 			return nil, err
 		}
 	}
-	return webrtc.NewAPI(webrtc.WithSettingEngine(se)), nil
+	return webrtc.NewAPI(webrtc.WithSettingEngine(se), webrtc.WithMediaEngine(me)), nil
 }
 
 func defaultRouteInterface() string {

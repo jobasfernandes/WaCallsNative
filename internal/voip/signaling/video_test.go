@@ -158,11 +158,8 @@ func TestVideoAdvertisementNodes(t *testing.T) {
 		t.Errorf("offer screen dims wrong")
 	}
 	accept := videoAcceptNode()
-	if wanode.AttrString(accept.Attrs, "dec") != "H264" {
-		t.Errorf("accept node dec wrong")
-	}
-	if _, ok := accept.Attrs["enc"]; ok {
-		t.Errorf("accept node must not carry enc")
+	if wanode.AttrString(accept.Attrs, "enc") != "h.264" || wanode.AttrString(accept.Attrs, "dec") != "H264,H265,AV1" {
+		t.Errorf("accept node attrs wrong: %+v", accept.Attrs)
 	}
 	pre := videoPreacceptNode()
 	if wanode.AttrString(pre.Attrs, "screen_width") != "0" || wanode.AttrString(pre.Attrs, "screen_height") != "0" {

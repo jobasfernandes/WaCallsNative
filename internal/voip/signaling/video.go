@@ -91,8 +91,8 @@ func videoOfferNode() waBinary.Node {
 
 func videoAcceptNode() waBinary.Node {
 	return waBinary.Node{Tag: "video", Attrs: waBinary.Attrs{
-		"dec":                "H264",
-		"device_orientation": "0",
+		"enc": "h.264",
+		"dec": "H264,H265,AV1",
 	}}
 }
 
