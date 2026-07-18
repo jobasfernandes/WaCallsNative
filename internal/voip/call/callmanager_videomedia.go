@@ -6,6 +6,7 @@ import (
 	"wacalls/internal/voip/core"
 	"wacalls/internal/voip/media"
 	"wacalls/internal/voip/media/h264"
+	"wacalls/internal/voip/wanode"
 )
 
 // videoAssembler turns depacketized H.264 NAL units into Annex-B access units, emitting one when
@@ -137,6 +138,7 @@ func (m *CallManager) handleVideoPacket(data []byte, ssrc uint32) {
 		m.mu.Lock()
 		if m.videoSsrc == 0 {
 			m.videoSsrc = ssrc
+			m.videoRecvPT = data[1] & 0x7f
 			// Subscribe the peer video SSRC at stream layer 1 so the relay delivers the full
 			// video layer instead of the throttled base layer (low quality otherwise).
 			m.relay.SetPeerVideoSsrc(ssrc)
@@ -205,4 +207,101 @@ func (m *CallManager) resetVideoRecvLocked() {
 	m.videoSsrc = 0
 	m.videoAsm = nil
 	m.videoRotation = 0
+	m.videoRecvPT = 0
+	m.videoSendSrtp = nil
+	m.videoSelfSsrc = 0
+	m.videoSendInit = false
+	m.videoSendSeq = 0
+	m.videoTxFrames, m.videoTxBytes = 0, 0
+	m.videoTxStart = time.Time{}
+}
+
+// SendPeerVideo forwards one browser-encoded, already-RFC-6184-packetized H.264 RTP payload to
+// the WhatsApp peer. It rewrites the RTP header (our video SSRC at counter 2, PT 97 or the locked
+// downlink PT, our own sequence) and re-encrypts under the per-JID send key in a dedicated SRTP
+// context. Timestamp and marker come straight from the browser. No-op unless the call carries
+// video and the relay is up. The first frame lazily declares our video SSRC to the relay.
+func (m *CallManager) SendPeerVideo(payload []byte, ts uint32, marker bool) {
+	if len(payload) == 0 {
+		return
+	}
+	m.mu.Lock()
+	if !m.localVideo || m.sendKM.MasterKey == nil || !m.relay.HasConnection() {
+		m.mu.Unlock()
+		return
+	}
+	if !m.videoSendInit {
+		callID, ourJid := "", m.videoOurDeviceJid
+		if m.currentCall != nil {
+			callID = m.currentCall.CallID
+		}
+		if ourJid == "" {
+			var participants []string
+			if m.currentCall != nil && m.currentCall.RelayData != nil {
+				participants = m.currentCall.RelayData.ParticipantJids
+			}
+			ourJid = ensureDeviceJid(findOurDevice(participants, wanode.CleanJID(m.ownCredJid()), m.ownCredJid()))
+			m.videoOurDeviceJid = ourJid
+		}
+		ctx, err := media.NewSrtpContext(m.sendKM, core.SRTPSendAuthTagLen)
+		if err != nil {
+			m.mu.Unlock()
+			m.log.Error("video send srtp init failed", "err", err)
+			return
+		}
+		m.videoSendSrtp = ctx
+		m.videoSelfSsrc = media.GenerateSecureSsrc(callID, ourJid, 2)
+		m.videoSendInit = true
+		// Mark our own video SSRC as self so the inbound NAL-sniff never locks onto our echo.
+		m.declareSelfSSRC(m.videoSelfSsrc)
+		m.relay.SetVideoSsrc(m.videoSelfSsrc)
+		go m.relay.ResendSubscriptions()
+		m.log.Info("video uplink started", "call_id", callID, "ssrc", m.videoSelfSsrc)
+	}
+	var pt uint8 = core.PayloadTypeWhatsAppH264
+	if m.videoRecvPT != 0 {
+		pt = m.videoRecvPT
+	}
+	hdr := media.NewRtpHeader(pt, m.videoSendSeq, ts, m.videoSelfSsrc)
+	hdr.Marker = marker
+	m.videoSendSeq++
+	ctx := m.videoSendSrtp
+	callID := ""
+	if m.currentCall != nil {
+		callID = m.currentCall.CallID
+	}
+	m.mu.Unlock()
+
+	protected, err := ctx.Protect(&media.RtpPacket{Header: hdr, Payload: payload})
+	if err != nil {
+		m.log.Debug("video srtp protect error", "err", err)
+		return
+	}
+	m.relay.Broadcast(protected)
+	m.logVideoTx(callID, len(payload), marker)
+}
+
+// logVideoTx emits a ~5s uplink summary (frames, kbps) mirroring logVideoRx. Metadata only.
+func (m *CallManager) logVideoTx(callID string, n int, marker bool) {
+	m.mu.Lock()
+	now := time.Now()
+	if m.videoTxStart.IsZero() {
+		m.videoTxStart = now
+	}
+	m.videoTxBytes += n
+	if marker {
+		m.videoTxFrames++
+	}
+	elapsed := now.Sub(m.videoTxStart)
+	if elapsed < 5*time.Second {
+		m.mu.Unlock()
+		return
+	}
+	secs := elapsed.Seconds()
+	frames, bytes := m.videoTxFrames, m.videoTxBytes
+	m.videoTxFrames, m.videoTxBytes = 0, 0
+	m.videoTxStart = now
+	m.mu.Unlock()
+	m.log.Info("video tx summary", "call_id", callID,
+		"fps", float64(frames)/secs, "kbps", float64(bytes*8)/secs/1000)
 }
