@@ -12,10 +12,10 @@ import { useT } from "@/hooks/useT";
 export const useResumeCall = (sid: string, micId: string | null) => {
   const t = useT();
   return useMutation({
-    mutationFn: async (vars: { callId: string }) => {
+    mutationFn: async (vars: { callId: string; video?: boolean }) => {
       const mic = await acquireMic(micId);
       try {
-        const conn = await openCall(sid, vars.callId, mic);
+        const conn = await openCall(sid, vars.callId, mic, vars.video ?? false);
         registerOwnConnection(vars.callId, conn);
       } catch (err) {
         mic.getTracks().forEach((track) => track.stop());

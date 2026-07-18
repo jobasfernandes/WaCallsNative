@@ -11,6 +11,7 @@ export type CallSummary = {
   peerPhotoUrl?: string;
   startedAt: number;
   status: CallStatus;
+  video?: boolean;
 };
 
 export type IncomingPayload = {

@@ -112,7 +112,7 @@ func (s *Server) doStartCall(sess *session.Session, w http.ResponseWriter, r *ht
 	s.broker.UpsertCall(events.CallRecord{
 		SessionID: sess.ID(), CallID: st.CallID, Owner: events.OwnerRef(owner), Direction: "outbound",
 		Peer: st.Peer, PeerName: st.PeerName, PeerPhotoURL: st.PeerPhotoURL,
-		StartedAt: time.Now().UnixMilli(), Status: events.StatusRinging,
+		StartedAt: time.Now().UnixMilli(), Status: events.StatusRinging, Video: body.Video,
 	})
 	sess.FetchCallPhoto(st.CallID, st.Peer)
 	writeJSON(w, http.StatusOK, map[string]any{"call": map[string]string{"callId": st.CallID}})

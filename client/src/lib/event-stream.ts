@@ -11,6 +11,7 @@ type CallListRow = {
   peerPhotoUrl?: string;
   startedAt: number;
   status: CallStatus;
+  video?: boolean;
   endedAt?: number;
   endReason?: string;
 };

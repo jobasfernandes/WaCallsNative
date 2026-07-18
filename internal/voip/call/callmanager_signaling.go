@@ -42,6 +42,10 @@ func (m *CallManager) HandleCallOffer(ctx context.Context, node *waBinary.Node, 
 	if signaling.OfferHasVideo(info.InnerNode) {
 		mediaType = core.CallMediaTypeVideo
 	}
+	// Diagnostic (INFO so it shows without -debug): whether the inbound offer was classified as
+	// video, plus its child tags, to tell a real video offer from an audio one on the wire.
+	m.log.Info("incoming offer media classified", "call_id", callID,
+		"video", mediaType == core.CallMediaTypeVideo, "children", childTagSummary(info.InnerNode))
 
 	m.mu.Lock()
 	call := NewIncomingCall(callID, peerJid.String(), creator, "", mediaType)

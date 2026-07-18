@@ -65,6 +65,7 @@ type CallManager struct {
 	videoSendInit     bool
 	videoTxFrames     int
 	videoTxBytes      int
+	videoTxKeyframes  int
 	videoTxStart      time.Time
 
 	timeouts      Timeouts

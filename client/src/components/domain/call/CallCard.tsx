@@ -321,10 +321,10 @@ export const CallCard = ({ call }: { call: CallSummary }) => {
   useEffect(() => {
     if (detached && !autoResumed.current && !resume.isPending) {
       autoResumed.current = true;
-      resume.mutate({ callId: call.callId });
+      resume.mutate({ callId: call.callId, video: call.video });
     }
     if (!detached) autoResumed.current = false;
-  }, [detached, resume, call.callId]);
+  }, [detached, resume, call.callId, call.video]);
 
   useEffect(() => {
     if (!conn) return;
@@ -561,7 +561,9 @@ export const CallCard = ({ call }: { call: CallSummary }) => {
               <Button
                 size="sm"
                 variant="outline"
-                onClick={() => resume.mutate({ callId: call.callId })}
+                onClick={() =>
+                  resume.mutate({ callId: call.callId, video: call.video })
+                }
               >
                 {t.calls.reconnectCall}
               </Button>

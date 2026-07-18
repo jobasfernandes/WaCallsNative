@@ -212,7 +212,7 @@ func (m *CallManager) resetVideoRecvLocked() {
 	m.videoSelfSsrc = 0
 	m.videoSendInit = false
 	m.videoSendSeq = 0
-	m.videoTxFrames, m.videoTxBytes = 0, 0
+	m.videoTxFrames, m.videoTxBytes, m.videoTxKeyframes = 0, 0, 0
 	m.videoTxStart = time.Time{}
 }
 
@@ -278,11 +278,30 @@ func (m *CallManager) SendPeerVideo(payload []byte, ts uint32, marker bool) {
 		return
 	}
 	m.relay.Broadcast(protected)
-	m.logVideoTx(callID, len(payload), marker)
+	m.logVideoTx(callID, len(payload), marker, payloadIsKeyframeNAL(payload))
 }
 
-// logVideoTx emits a ~5s uplink summary (frames, kbps) mirroring logVideoRx. Metadata only.
-func (m *CallManager) logVideoTx(callID string, n int, marker bool) {
+// payloadIsKeyframeNAL reports whether an outbound H.264 RTP payload starts an IDR or SPS NAL
+// (a keyframe). Handles single-NAL and the start packet of an FU-A fragment. Diagnostic only:
+// it tells us how often the browser encoder is emitting keyframes (peer resync points).
+func payloadIsKeyframeNAL(payload []byte) bool {
+	if len(payload) == 0 {
+		return false
+	}
+	nalType := payload[0] & 0x1f
+	if nalType == 28 { // FU-A: original type is in the FU header, count only the start fragment
+		if len(payload) < 2 || payload[1]&0x80 == 0 {
+			return false
+		}
+		nalType = payload[1] & 0x1f
+	}
+	return nalType == 5 || nalType == 7 // IDR slice or SPS
+}
+
+// logVideoTx emits a ~5s uplink summary (frames, kbps, keyframes) mirroring logVideoRx. Metadata
+// only. key_nals is how many IDR/SPS NALs we sent in the window: too few means the peer has no
+// resync point after packet loss, which reads as an intermittent freeze on its side.
+func (m *CallManager) logVideoTx(callID string, n int, marker, keyframe bool) {
 	m.mu.Lock()
 	now := time.Now()
 	if m.videoTxStart.IsZero() {
@@ -292,16 +311,19 @@ func (m *CallManager) logVideoTx(callID string, n int, marker bool) {
 	if marker {
 		m.videoTxFrames++
 	}
+	if keyframe {
+		m.videoTxKeyframes++
+	}
 	elapsed := now.Sub(m.videoTxStart)
 	if elapsed < 5*time.Second {
 		m.mu.Unlock()
 		return
 	}
 	secs := elapsed.Seconds()
-	frames, bytes := m.videoTxFrames, m.videoTxBytes
-	m.videoTxFrames, m.videoTxBytes = 0, 0
+	frames, bytes, keys := m.videoTxFrames, m.videoTxBytes, m.videoTxKeyframes
+	m.videoTxFrames, m.videoTxBytes, m.videoTxKeyframes = 0, 0, 0
 	m.videoTxStart = now
 	m.mu.Unlock()
 	m.log.Info("video tx summary", "call_id", callID,
-		"fps", float64(frames)/secs, "kbps", float64(bytes*8)/secs/1000)
+		"fps", float64(frames)/secs, "kbps", float64(bytes*8)/secs/1000, "key_nals", keys)
 }
