@@ -9,7 +9,11 @@ import { useT } from "@/hooks/useT";
 export const useAcceptCall = (micId: string | null) => {
   const t = useT();
   return useMutation({
-    mutationFn: async (vars: { sid: string; callId: string; video?: boolean }) => {
+    mutationFn: async (vars: {
+      sid: string;
+      callId: string;
+      video?: boolean;
+    }) => {
       const mic = await acquireMic(micId);
       let callId: string;
       try {
