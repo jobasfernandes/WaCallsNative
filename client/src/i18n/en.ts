@@ -149,6 +149,7 @@ export const en: Messages = {
     refresh: "Refresh",
     call: "Call",
     callAria: (name) => `Call ${name}`,
+    videoCallAria: (name) => `Video call ${name}`,
     pick: "Pick a contact",
     pickTitle: "Pick a contact to dial",
     newContact: "New contact",

@@ -151,6 +151,7 @@ export const ptBR: Messages = {
     refresh: "Atualizar",
     call: "Ligar",
     callAria: (name) => `Ligar para ${name}`,
+    videoCallAria: (name) => `Chamada de vídeo com ${name}`,
     pick: "Escolher contato",
     pickTitle: "Escolha um contato para discar",
     newContact: "Novo contato",

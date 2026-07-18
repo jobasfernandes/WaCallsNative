@@ -142,6 +142,7 @@ export type Messages = {
     refresh: string;
     call: string;
     callAria: (name: string) => string;
+    videoCallAria: (name: string) => string;
     pick: string;
     pickTitle: string;
     newContact: string;
