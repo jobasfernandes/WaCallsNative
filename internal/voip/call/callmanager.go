@@ -57,6 +57,7 @@ type CallManager struct {
 	videoAsm      *videoAssembler
 	videoRotation int
 	videoRecvPT   uint8
+	videoRxSeen   int
 
 	videoSelfSsrc     uint32
 	videoOurDeviceJid string

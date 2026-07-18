@@ -91,6 +91,8 @@ func parseCVORotation(data []byte) int {
 // forwarded to OnPeerVideoRotation when it changes.
 func (m *CallManager) handleVideoPacket(data []byte, ssrc uint32) {
 	m.mu.Lock()
+	m.videoRxSeen++
+	firstRx := m.videoRxSeen == 1
 	if m.recvKM.MasterKey == nil {
 		m.mu.Unlock()
 		return
@@ -128,6 +130,13 @@ func (m *CallManager) handleVideoPacket(data []byte, ssrc uint32) {
 	}
 
 	pkt, err := vctx.Unprotect(data)
+	if firstRx {
+		// Diagnostic: proves whether the peer's video reaches us at all (relay/subscription) and,
+		// if so, whether our video SRTP context decrypts it to a plausible H.264 NAL (keying).
+		plausible := err == nil && pkt != nil && len(pkt.Payload) > 0 && h264.IsPlausibleNALHeader(pkt.Payload[0])
+		m.log.Info("video rx first packet", "call_id", callID, "ssrc", ssrc, "pt", data[1]&0x7f,
+			"srtp_ok", err == nil, "plausible_nal", plausible)
+	}
 	if err != nil || len(pkt.Payload) == 0 {
 		return
 	}
@@ -208,6 +217,7 @@ func (m *CallManager) resetVideoRecvLocked() {
 	m.videoAsm = nil
 	m.videoRotation = 0
 	m.videoRecvPT = 0
+	m.videoRxSeen = 0
 	m.videoSendSrtp = nil
 	m.videoSelfSsrc = 0
 	m.videoSendInit = false

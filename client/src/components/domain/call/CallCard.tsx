@@ -287,7 +287,10 @@ export const CallCard = ({ call }: { call: CallSummary }) => {
   const [rotation, setRotation] = useState(0);
   const hasLocalCamera = !!conn?.localVideoStream;
   const [cameraOn, setCameraOn] = useState(true);
-  const immersive = hasVideo && !detached;
+  // Show the immersive video stage as soon as this is a video call: either the peer's video has
+  // arrived or we are sending our own camera. Waiting for the remote track alone would hide the
+  // self-view and the camera/mic controls whenever the peer's downlink has not locked yet.
+  const immersive = (hasVideo || hasLocalCamera) && !detached;
 
   const toggleCamera = () => {
     if (!conn) return;
