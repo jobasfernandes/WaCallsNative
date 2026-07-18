@@ -292,7 +292,8 @@ func (m *CallManager) cleanupMedia() {
 	var qArgs []any
 	if m.recvStats != nil {
 		q := m.recvStats.QualitySnapshot(uint64(time.Now().UnixMilli()))
-		qArgs = []any{"call_id", callID, "codec", codec, "jitter_ms", q.JitterMs, "loss", q.LossFraction, "rtt_samples", m.recvStats.RttSamples()}
+		qArgs = []any{"call_id", callID, "codec", codec, "jitter_ms", q.JitterMs, "loss", q.LossFraction, "rtt_samples", m.recvStats.RttSamples(),
+			"peer_audio_rx", m.peerAudioRx.Load(), "peer_video_rx", m.videoRxSeen}
 		if q.HasRtt {
 			qArgs = append(qArgs, "rtt_ms", q.RttMs)
 		}
@@ -305,6 +306,7 @@ func (m *CallManager) cleanupMedia() {
 	m.rtpPacketsSent = 0
 	m.rtpOctetsSent = 0
 	m.lastRtpTs = 0
+	m.peerAudioRx.Store(0)
 	m.mu.Unlock()
 
 	if drops := m.srtpDrops.snapshotAndReset(); len(drops) > 0 {

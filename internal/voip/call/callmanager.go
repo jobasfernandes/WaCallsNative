@@ -58,6 +58,7 @@ type CallManager struct {
 	videoRotation int
 	videoRecvPT   uint8
 	videoRxSeen   int
+	peerAudioRx   atomic.Int64
 
 	videoSelfSsrc     uint32
 	videoOurDeviceJid string
@@ -263,6 +264,15 @@ func (m *CallManager) setupIncomingMedia(call *CallInfo, relayData *core.RelayDa
 	}
 	m.relay.SetSubscriptionSsrc(firstSsrc(m.peerSsrcs))
 	m.initSrtpKeysLocked()
+	m.log.Info("inbound relay pids", "call_id", call.CallID,
+		"self_pid", pidVal(relayData.SelfPid), "peer_pid", pidVal(relayData.PeerPid))
+}
+
+func pidVal(p *int) int {
+	if p == nil {
+		return -1
+	}
+	return *p
 }
 
 func (m *CallManager) RejectCall(ctx context.Context, callID string, reason core.EndCallReason) error {

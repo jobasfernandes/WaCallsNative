@@ -258,6 +258,7 @@ func (m *CallManager) onRelayData(data []byte) {
 	if recvStats != nil {
 		recvStats.NoteRTP(pkt.Header.SequenceNumber, pkt.Header.Timestamp, uint64(time.Now().UnixMilli()))
 	}
+	m.peerAudioRx.Add(1)
 	handler(pkt)
 }
 
