@@ -73,6 +73,23 @@ func OfferHasVideo(offer *waBinary.Node) bool {
 	return false
 }
 
+// OfferVideoOrientation returns the peer's device_orientation (0..3) from the offer's <video>
+// node, or -1 when absent. WhatsApp signals the camera rotation here, not in the RTP extension.
+func OfferVideoOrientation(offer *waBinary.Node) int {
+	if offer == nil {
+		return -1
+	}
+	for _, c := range wanode.NodeChildren(offer) {
+		if c.Tag == "video" {
+			if !wanode.HasAttr(c.Attrs, "device_orientation") {
+				return -1
+			}
+			return wanode.AttrInt(c.Attrs, "device_orientation", 0)
+		}
+	}
+	return -1
+}
+
 func ParseVideoState(inner *waBinary.Node) (state, orientation int) {
 	state, _ = strconv.Atoi(wanode.AttrString(inner.Attrs, "state"))
 	orientation, _ = strconv.Atoi(wanode.AttrString(inner.Attrs, "device_orientation"))

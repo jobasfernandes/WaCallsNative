@@ -42,16 +42,22 @@ func (m *CallManager) HandleCallOffer(ctx context.Context, node *waBinary.Node, 
 	if signaling.OfferHasVideo(info.InnerNode) {
 		mediaType = core.CallMediaTypeVideo
 	}
+	orient := signaling.OfferVideoOrientation(info.InnerNode)
 	// Diagnostic (INFO so it shows without -debug): whether the inbound offer was classified as
-	// video, plus its child tags, to tell a real video offer from an audio one on the wire.
+	// video, its child tags, and the peer's signaled camera orientation (WhatsApp puts it here,
+	// not in the RTP extension), so we can render the peer's video upright.
 	m.log.Info("incoming offer media classified", "call_id", callID,
-		"video", mediaType == core.CallMediaTypeVideo, "children", childTagSummary(info.InnerNode))
+		"video", mediaType == core.CallMediaTypeVideo, "orientation", orient,
+		"children", childTagSummary(info.InnerNode))
 
 	m.mu.Lock()
 	call := NewIncomingCall(callID, peerJid.String(), creator, "", mediaType)
 	if mediaType == core.CallMediaTypeVideo {
 		m.localVideo = true
 		m.remoteVideo = true
+		if orient >= 0 {
+			m.peerVideoOrientation = orient
+		}
 	}
 	if callKey != nil {
 		call.EncryptionKey = callKey

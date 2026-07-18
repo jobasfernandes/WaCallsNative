@@ -122,8 +122,12 @@ func (m *CallManager) handleVideoPacket(data []byte, ssrc uint32) {
 	if m.currentCall != nil {
 		callID = m.currentCall.CallID
 	}
+	// The peer's camera rotation comes from signaling (m.peerVideoOrientation, 0..3), not the RTP
+	// extension (WhatsApp video rides the proprietary 0xDEBE block, which has no CVO). Push it to
+	// the browser on every packet, deduplicated, so a rotation set before the browser attached
+	// still reaches it.
 	rotChanged := false
-	if deg := parseCVORotation(data); deg >= 0 && deg != m.videoRotation {
+	if deg := (m.peerVideoOrientation % 4) * 90; deg != m.videoRotation {
 		m.videoRotation = deg
 		rotChanged = true
 	}
