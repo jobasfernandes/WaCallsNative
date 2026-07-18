@@ -256,16 +256,6 @@ func (m *CallManager) setupIncomingMedia(call *CallInfo, relayData *core.RelayDa
 			m.selfSsrc = newSelf
 			m.replaceRtpSession(media.NewWhatsAppOpusSession(newSelf))
 		}
-		if call.MediaType == core.CallMediaTypeVideo {
-			// Declare our video SSRC (counter 2) to the relay up front, so the very first allocate
-			// at relay-connect lists a video slot in the self SSRC list. The relay uses that to
-			// treat us as a video participant and bridge the peer's video downlink to us. Deriving
-			// it lazily on the first camera frame is too late: the initial allocate would advertise
-			// audio only and the peer's video would never be forwarded (probe never fires inbound).
-			// SendPeerVideo re-derives the identical SSRC; the relay field set here is load-bearing
-			// and survives the resetVideoRecvLocked inside initSrtpKeysLocked below.
-			m.relay.SetVideoSsrc(media.GenerateSecureSsrc(call.CallID, ourDeviceJid, 2))
-		}
 		if peer := firstPeerDevice(relayData.ParticipantJids, ourBase); peer != "" {
 			m.peerSsrcs = []uint32{media.GenerateSecureSsrc(call.CallID, ensureDeviceJid(peer), 0)}
 			m.actualPeerSet = true
