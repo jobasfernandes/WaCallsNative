@@ -1,7 +1,8 @@
-# Inbound video media
+# Video media
 
 **Files:** [`internal/voip/media/h264/depacketizer.go`](../internal/voip/media/h264/depacketizer.go),
 [`internal/voip/call/callmanager_videomedia.go`](../internal/voip/call/callmanager_videomedia.go),
+[`internal/voip/call/callmanager_media.go`](../internal/voip/call/callmanager_media.go),
 [`internal/voip/transport/subscriptions.go`](../internal/voip/transport/subscriptions.go),
 [`internal/app/webrtc.go`](../internal/app/webrtc.go),
 [`internal/app/session/bridge.go`](../internal/app/session/bridge.go),
@@ -9,23 +10,23 @@
 [`client/src/lib/call/video-codec.ts`](../client/src/lib/call/video-codec.ts),
 [`client/src/components/domain/call/CallCard.tsx`](../client/src/components/domain/call/CallCard.tsx)
 
-WaCalls receives the peer's H.264 video on a 1:1 call and renders it in the browser call
-card. Receive only: WaCalls sends no video of its own. Signaling that gets the call to ring
-and connect as video lives in [video-signaling.md](./video-signaling.md).
+WaCalls does two-way H.264 video on a 1:1 call: it receives the peer's video and renders it
+in the browser call card, and it sends the operator's camera to the peer. Signaling that gets
+the call to ring and connect as video lives in [video-signaling.md](./video-signaling.md).
 
 > **Known limitation:** the peer's video arrives at a low bitrate (~25 kbps / ~5 fps) that
 > WhatsApp's server-side estimator will not raise for WaCalls. The picture is correct but
 > soft. See [The downlink-bitrate wall](#the-downlink-bitrate-wall) - do not re-try the
 > levers already ruled out there.
 
-## Pipeline
+## Inbound pipeline (peer -> browser)
 
 ```
 relay ─(SRTP, PT 97)─> handleVideoPacket ─> videoAssembler ─> bridge.WriteVideo
                           |                    (RFC 6184           |
                           | CVO ext (clear)     depacketize,       | pion TrackLocalStaticSample{H264}
                           v                     Annex-B assemble)  v
-                    OnPeerVideoRotation ───────────────────>  browser <video> (recvonly transceiver)
+                    OnPeerVideoRotation ───────────────────>  browser <video> (sendrecv transceiver)
 ```
 
 - **SSRC lock.** The peer sends audio on SSRC counter 0 and video on counter 2. The first
@@ -42,8 +43,44 @@ relay ─(SRTP, PT 97)─> handleVideoPacket ─> videoAssembler ─> bridge.Wri
   extension (profile `0xBEDE`); `parseCVORotation` reads it and the browser applies a CSS
   rotate so the picture is upright.
 - **Browser leg.** The server writes access units to a pion `TrackLocalStaticSample{H264}`
-  added to the browser peer connection; the client adds a `recvonly` H.264 transceiver and
-  binds the track to a `<video>` element in the call card.
+  added to the browser peer connection; on a video call the client makes the H.264 transceiver
+  `sendrecv` and binds the received track to a `<video>` element in the call card.
+
+## Outbound pipeline (browser -> peer)
+
+```
+browser camera ─encode H264/RFC6184─> pc video track (sendrecv, 320x240@15fps, 180 kbps)
+                                            │
+                        pc.OnTrack ── ReadRTP loop ──> bridge.OnBrowserVideo(payload, ts, marker)
+                                            │                       │
+                        pump: 1s PLI + inbound-PLI forward          v
+                                            │            CallManager.SendPeerVideo
+                                            ▼               (rewrite header, SRTP, Broadcast)
+                                  pc.WriteRTCP(PLI) to browser  ──> relay ─(SRTP, PT 97)─> peer
+```
+
+The server does **not** encode or re-packetize. The browser encodes and RFC-6184 packetizes
+the camera; the server reuses those H.264 payloads verbatim and only rewrites the RTP header
+and re-encrypts:
+
+- **No server-side encode.** `pc.OnTrack` reads the browser's video RTP; each payload,
+  timestamp (90 kHz, passed through), and marker goes to `SendPeerVideo`.
+- **Header rewrite.** PT 97 (or the locked downlink PT), our own video SSRC
+  `GenerateSecureSsrc(callID, ourDeviceJid, counter=2)` (audio is counter 0), our own
+  sequence counter. Timestamp and marker come from the browser. **No RTP header extension on
+  outbound video** - two-way video works without one; only outbound audio carries the empty
+  `0xbede`.
+- **SRTP.** A dedicated send context (its own ROC) keyed off the same per-JID `sendKM` as
+  audio; the IV mixes in the SSRC so one key across both streams is safe. Auth tag 4 bytes.
+- **Lazy declare.** The first camera frame derives the video SSRC, marks it self (so the
+  inbound NAL-sniff never locks onto our own echo), and declares it to the relay
+  (`SetVideoSsrc` + `ResendSubscriptions`).
+- **Keyframes.** The WhatsApp peer sends no PLI, so the bridge pumps a PLI to the browser
+  every 1 s once its video arrives; an inbound peer PLI/FIR (RTCP PSFB fmt 1/4) is also
+  forwarded to the browser. Both make the browser encoder emit an IDR.
+- **Encode caps.** The browser caps the stream at 320x240 / 15 fps / 180 kbps: a light stream
+  freezes less on WhatsApp's loss-sensitive relay. No sender report is emitted for the video
+  SSRC; two-way video works without one.
 
 ## The downlink-bitrate wall
 
