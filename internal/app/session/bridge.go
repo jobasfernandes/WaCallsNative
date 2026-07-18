@@ -4,11 +4,13 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"wacalls/internal/voip/media"
 
+	"github.com/pion/rtcp"
 	"github.com/pion/webrtc/v4"
 	pionmedia "github.com/pion/webrtc/v4/pkg/media"
 )
@@ -32,8 +34,16 @@ type Bridge struct {
 	lastRotSent atomic.Int32
 	log         *slog.Logger
 
+	browserVideoSSRC atomic.Uint32
+	lastPLI          atomic.Int64
+	pumpStop         chan struct{}
+	pumpOnce         sync.Once
+	closeOnce        sync.Once
+
 	// OnBrowserPCM is invoked with decoded 16 kHz mono PCM captured from the browser mic.
 	OnBrowserPCM func(pcm []float32)
+	// OnBrowserVideo is invoked with each H.264 RTP payload the browser sends from its camera.
+	OnBrowserVideo func(payload []byte, ts uint32, marker bool)
 	// OnTerminalICE fires when the peer connection fails or closes.
 	OnTerminalICE func()
 }
@@ -43,7 +53,7 @@ func NewBridge(api *webrtc.API, offerSDP string, log *slog.Logger) (*Bridge, str
 	if err != nil {
 		return nil, "", err
 	}
-	br := &Bridge{pc: pc, log: log}
+	br := &Bridge{pc: pc, log: log, pumpStop: make(chan struct{})}
 
 	// The browser offers an m=video (recvonly) line only for a video call; add the H264
 	// downlink track only then, else the answer would carry an m-line the offer lacks.
@@ -83,6 +93,25 @@ func NewBridge(api *webrtc.API, offerSDP string, log *slog.Logger) (*Bridge, str
 		case metaChannelLabel:
 			br.meta.Store(dc)
 		}
+	})
+
+	pc.OnTrack(func(track *webrtc.TrackRemote, _ *webrtc.RTPReceiver) {
+		if track.Kind() != webrtc.RTPCodecTypeVideo {
+			return
+		}
+		br.browserVideoSSRC.Store(uint32(track.SSRC()))
+		br.startKeyframePump()
+		go func() {
+			for {
+				pkt, _, rerr := track.ReadRTP()
+				if rerr != nil {
+					return
+				}
+				if cb := br.OnBrowserVideo; cb != nil && len(pkt.Payload) > 0 {
+					cb(pkt.Payload, pkt.Timestamp, pkt.Marker)
+				}
+			}
+		}()
 	})
 
 	pc.OnICEConnectionStateChange(func(s webrtc.ICEConnectionState) {
@@ -145,7 +174,42 @@ func (b *Bridge) SendRotation(deg int) {
 	_ = dc.SendText(fmt.Sprintf(`{"rot":%d}`, deg))
 }
 
+// RequestKeyframe asks the browser encoder for an IDR via an RTCP PLI, rate-limited to 300 ms.
+func (b *Bridge) RequestKeyframe() {
+	ssrc := b.browserVideoSSRC.Load()
+	if ssrc == 0 {
+		return
+	}
+	now := time.Now().UnixMilli()
+	if now-b.lastPLI.Load() < 300 {
+		return
+	}
+	b.lastPLI.Store(now)
+	_ = b.pc.WriteRTCP([]rtcp.Packet{&rtcp.PictureLossIndication{MediaSSRC: ssrc}})
+}
+
+// startKeyframePump drives a 1 s PLI to the browser once its camera video arrives: the WhatsApp
+// peer never sends PLI, so periodic keyframes are the only resync path for the peer decoder.
+func (b *Bridge) startKeyframePump() {
+	b.pumpOnce.Do(func() {
+		go func() {
+			t := time.NewTicker(time.Second)
+			defer t.Stop()
+			b.RequestKeyframe()
+			for {
+				select {
+				case <-b.pumpStop:
+					return
+				case <-t.C:
+					b.RequestKeyframe()
+				}
+			}
+		}()
+	})
+}
+
 func (b *Bridge) Close() {
+	b.closeOnce.Do(func() { close(b.pumpStop) })
 	if b.pc != nil {
 		_ = b.pc.Close()
 	}
