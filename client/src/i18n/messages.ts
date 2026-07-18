@@ -114,6 +114,8 @@ export type Messages = {
   };
   incoming: {
     title: string;
+    videoTitle: string;
+    videoCall: string;
     accept: string;
     reject: string;
   };

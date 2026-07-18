@@ -1,5 +1,5 @@
 import { useEffect } from "react";
-import { Phone, PhoneOff } from "lucide-react";
+import { Phone, PhoneOff, Video } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -70,6 +70,7 @@ export const IncomingCallModal = () => {
   const accept = useAcceptCall(micId);
   const reject = useRejectCall();
   const busy = accept.isPending || reject.isPending;
+  const isVideo = !!incoming?.video;
   const t = useT();
 
   useEffect(() => {
@@ -94,10 +95,18 @@ export const IncomingCallModal = () => {
               photoUrl={incoming?.peerPhotoUrl}
             />
           </div>
-          <DialogTitle>{t.incoming.title}</DialogTitle>
+          <DialogTitle>
+            {isVideo ? t.incoming.videoTitle : t.incoming.title}
+          </DialogTitle>
           <DialogDescription className="truncate">
             {incoming?.peerName || incoming?.peer}
           </DialogDescription>
+          {isVideo && (
+            <span className="mt-1 inline-flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+              <Video className="h-3.5 w-3.5" />
+              {t.incoming.videoCall}
+            </span>
+          )}
         </DialogHeader>
         <div className="mt-2 flex items-center justify-center gap-6">
           <Button
@@ -130,7 +139,11 @@ export const IncomingCallModal = () => {
             }
             aria-label={t.incoming.accept}
           >
-            <Phone className="h-6 w-6" />
+            {isVideo ? (
+              <Video className="h-6 w-6" />
+            ) : (
+              <Phone className="h-6 w-6" />
+            )}
           </Button>
         </div>
       </DialogContent>

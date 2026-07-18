@@ -120,6 +120,8 @@ export const en: Messages = {
   },
   incoming: {
     title: "Incoming call",
+    videoTitle: "Incoming video call",
+    videoCall: "Video call",
     accept: "Accept",
     reject: "Reject",
   },
