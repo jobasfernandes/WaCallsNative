@@ -466,8 +466,10 @@ export const CallCard = ({ call }: { call: CallSummary }) => {
             muted
             onLoadedMetadata={(e) => {
               const v = e.currentTarget;
+              // Phone front-camera video arrives landscape and upright-relative rotation is 270deg
+              // (a -90deg turn); +90 would land upside down. Operator can still adjust by hand.
               if (!rotatedManually.current && v.videoWidth > v.videoHeight) {
-                setPeerRotate(90);
+                setPeerRotate(270);
               }
             }}
             className="mx-auto block max-h-[60vh] w-full object-contain"
