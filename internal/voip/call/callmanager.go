@@ -64,6 +64,7 @@ type CallManager struct {
 	videoOurDeviceJid string
 	videoSendSrtp     *media.SrtpContext
 	videoSendSeq      uint16
+	videoSendXseq     uint16
 	videoSendInit     bool
 	videoTxFrames     int
 	videoTxBytes      int
