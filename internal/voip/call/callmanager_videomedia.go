@@ -49,15 +49,20 @@ func (a *videoAssembler) feed(seq uint16, payload []byte, ts uint32, marker bool
 	return au, dur
 }
 
-// parseCVORotation reads the WhatsApp CVO (video orientation) from the clear RTP one-byte-header
-// extension (profile 0xBEDE); returns rotation in degrees, or -1 when absent. The RTP header and
-// extension are not encrypted by SRTP, so it reads the raw packet.
+// parseCVORotation reads the standard CVO (video orientation) from the clear RTP one-byte-header
+// extension, profile 0xBEDE only; returns rotation in degrees, or -1 when absent. WhatsApp video
+// actually rides a proprietary 0xDEBE extension whose first element (MediaFrameInfo) is NOT CVO;
+// reading it as rotation misinterprets a keyframe marker (0x09 & 0x03 = 1) as 90 degrees. The RTP
+// header and extension are not encrypted by SRTP, so it reads the raw packet.
 func parseCVORotation(data []byte) int {
 	if len(data) < 12 || (data[0]>>4)&1 == 0 {
 		return -1
 	}
 	off := 12 + int(data[0]&0x0f)*4
 	if len(data) < off+4 {
+		return -1
+	}
+	if profile := int(data[off])<<8 | int(data[off+1]); profile != 0xBEDE {
 		return -1
 	}
 	extLen := (int(data[off+2])<<8 | int(data[off+3])) * 4
