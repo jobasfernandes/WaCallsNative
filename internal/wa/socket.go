@@ -38,25 +38,40 @@ func (s *Socket) SendNode(ctx context.Context, node waBinary.Node) error {
 }
 
 func (s *Socket) Query(ctx context.Context, node waBinary.Node) (*waBinary.Node, error) {
+	resp, _, err := s.QueryReportingWrite(ctx, node)
+	return resp, err
+}
+
+// QueryReportingWrite is Query plus the one bit callers cannot infer from the
+// error: whether the node reached the wire. Only a failing SendNode reports
+// wrote=false — once the write succeeds, every later outcome (ack, timeout,
+// dead context, dead socket) is reported as written, because the peer may
+// already be acting on it.
+//
+// Callers that put an offer on the wire need this to tell "nothing was sent"
+// from "it was sent and then something went wrong": in the second case the
+// callee's phone is ringing and the leg has to be torn down explicitly.
+func (s *Socket) QueryReportingWrite(ctx context.Context, node waBinary.Node) (*waBinary.Node, bool, error) {
 	id, _ := node.Attrs["id"].(string)
 	if id == "" {
-		return nil, s.di().SendNode(ctx, node)
+		err := s.di().SendNode(ctx, node)
+		return nil, err == nil, err
 	}
 	di := s.di()
 	ch := di.WaitResponse(id)
 	if err := di.SendNode(ctx, node); err != nil {
 		di.CancelResponse(id, ch)
-		return nil, err
+		return nil, false, err
 	}
 	select {
 	case resp := <-ch:
-		return resp, nil
+		return resp, true, nil
 	case <-time.After(15 * time.Second):
 		di.CancelResponse(id, ch)
-		return nil, nil
+		return nil, true, nil
 	case <-ctx.Done():
 		di.CancelResponse(id, ch)
-		return nil, ctx.Err()
+		return nil, true, ctx.Err()
 	}
 }
 
