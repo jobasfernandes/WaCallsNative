@@ -106,6 +106,23 @@ func (m *CallManager) HandleCallAccept(ctx context.Context, node *waBinary.Node,
 		return
 	}
 
+	// Only the first accept drives the media path. On a multi-device peer a
+	// second companion device can accept the same offer, and everything below
+	// re-points media: the decrypt branch calls reinitSrtpLocked, and the block
+	// after it recomputes the subscription SSRC and re-derives the SRTP keys
+	// from acceptedByJid. Running that for a late device moves an established
+	// call onto another handset — packets from the device that actually
+	// answered start failing authentication and the audio dies. Same reasoning
+	// as actualPeerSet guarding the subscription SSRC below.
+	m.mu.Lock()
+	firstAccept := m.acceptedByJid == ""
+	m.mu.Unlock()
+	if !firstAccept {
+		m.log.Debug("ignoring accept from a second device; call already anchored",
+			"call_id", call.CallID, "peer", peerJid.String())
+		return
+	}
+
 	if signaling.NeedsDecryption(info.Tag) {
 		if peerKey, err := signaling.DecryptCallKeyInNode(ctx, m.sock, info.InnerNode, peerJid); err == nil && peerKey != nil {
 			m.mu.Lock()
