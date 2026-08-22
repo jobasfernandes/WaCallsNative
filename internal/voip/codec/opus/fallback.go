@@ -36,3 +36,12 @@ func (c *fallbackCodec) FrameSize() int { return c.inner.FrameSize() }
 func (c *fallbackCodec) SampleRate() int { return c.inner.SampleRate() }
 
 func (c *fallbackCodec) Close() { c.inner.Close() }
+
+// OffPointCounts forwards the inner codec's report; standard-Opus frames handled
+// here never reach the MLow guard, so they are not counted twice.
+func (c *fallbackCodec) OffPointCounts() map[string]int {
+	if r, ok := c.inner.(core.OffPointCounter); ok {
+		return r.OffPointCounts()
+	}
+	return nil
+}

@@ -1,6 +1,11 @@
 package mlow
 
-import "github.com/rs/zerolog"
+import (
+	"maps"
+	"sync"
+
+	"github.com/rs/zerolog"
+)
 
 // MLow top-level decoder: RED strip → TOC routing → active-frame decode (3 chained
 // 20 ms internal frames: LSF → pulses → pitch/gains → reconstruct → CELP synthesis)
@@ -38,6 +43,32 @@ type MlowDecoder struct {
 	lastWasRed    bool
 	lastRedBlocks int
 	lastMainToc   byte
+
+	offPointMu     sync.Mutex
+	offPointCounts map[string]int
+}
+
+// OffPointCounts returns how many frames were silenced per reason since the
+// decoder was created. Counted here, after RED depacketization, because the
+// container's own TOC says nothing about the frames inside it.
+func (d *MlowDecoder) OffPointCounts() map[string]int {
+	d.offPointMu.Lock()
+	defer d.offPointMu.Unlock()
+	if len(d.offPointCounts) == 0 {
+		return nil
+	}
+	out := make(map[string]int, len(d.offPointCounts))
+	maps.Copy(out, d.offPointCounts)
+	return out
+}
+
+func (d *MlowDecoder) noteOffPoint(reason string) {
+	d.offPointMu.Lock()
+	if d.offPointCounts == nil {
+		d.offPointCounts = map[string]int{}
+	}
+	d.offPointCounts[reason]++
+	d.offPointMu.Unlock()
 }
 
 // LastDecodeStats returns diagnostics for the most recent decode: the active body
@@ -162,10 +193,12 @@ func (d *MlowDecoder) decodeFrame(frame []byte) []float32 {
 	// 0x90 are inactive and still fall through to silence. Gating on SID (as the
 	// reference's golden 60 ms capture did, where active frames had bit7=0) would
 	// silence the entire inbound stream once the peer turns DTX on.
-	if toc.StdOpus || !toc.Active || toc.SampleRate != 16000 || toc.Flag2 || toc.FrameMs != 60 {
-		d.log.Debug().Uint8("toc_byte", frame[0]).Bool("std_opus", toc.StdOpus).Bool("sid", toc.SID).
-			Bool("active", toc.Active).Int("frame_ms", toc.FrameMs).Int("sample_rate", toc.SampleRate).
-			Bool("low_rate", toc.Flag2).Msg("decode frame: off operating point or inactive, emitting silence")
+	if reason := OffOperatingPointReason(toc); reason != "" {
+		d.noteOffPoint(reason)
+		d.log.Debug().Uint8("toc_byte", frame[0]).Str("reason", reason).Bool("std_opus", toc.StdOpus).
+			Bool("sid", toc.SID).Bool("active", toc.Active).Int("frame_ms", toc.FrameMs).
+			Int("sample_rate", toc.SampleRate).Bool("low_rate", toc.Flag2).
+			Msg("decode frame: off operating point or inactive, emitting silence")
 		return make([]float32, outLen)
 	}
 	return d.decodeActiveFrame(frame)

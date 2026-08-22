@@ -1,4 +1,29 @@
-# Troubleshooting WaCalls
+# Troubleshooting
+
+## Inbound frames silenced on an unimplemented operating point
+
+At the end of every call the server logs how many inbound audio frames the MLow
+decoder replaced with silence, broken down by reason:
+
+```
+INFO inbound frames silenced call_id=... inactive=194 std_opus=0 low_rate=0 sample_rate=0 frame_ms=0
+```
+
+- `inactive` and `std_opus` are **normal**. `inactive` is DTX / comfort noise, and
+  it dominates the count on any real call: roughly half the inbound frames of a
+  captured call were inactive. `std_opus` frames are routed to the stock Opus
+  decoder before the MLow guard, so they are not lost either.
+- `low_rate`, `sample_rate` and `frame_ms` mean **real audio was dropped**. The
+  decoder implements one operating point (16 kHz, 60 ms, `low_rate=0`), and any
+  frame outside it becomes silence. These raise the log line to `WARN`.
+
+As of the last measurement, `low_rate` was **zero across 373 frames** of a real
+captured call, and the reference implementation's own low-rate test vector is
+synthetic rather than captured. If you see a non-zero `low_rate` in the field,
+that is new evidence and worth acting on: the two-subframe operating point would
+have to be implemented in `internal/voip/codec/mlow`.
+
+ WaCalls
 
 **Files:** [`internal/app/webrtc.go`](../internal/app/webrtc.go), [`internal/voip/transport/sctprelay.go`](../internal/voip/transport/sctprelay.go), [`internal/app/auth.go`](../internal/app/auth.go)
 

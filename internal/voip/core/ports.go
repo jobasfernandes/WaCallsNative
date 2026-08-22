@@ -15,6 +15,13 @@ type AudioSink interface {
 	OnPeerPCM(handler func(pcm []float32))
 }
 
+// OffPointCounter reports how many inbound frames the decoder silenced instead
+// of decoding, keyed by reason. Optional: a codec that cannot answer simply does
+// not implement it, and callers skip the report.
+type OffPointCounter interface {
+	OffPointCounts() map[string]int
+}
+
 type ReactionSink interface {
 	SendReaction(emoji string) error
 	OnPeerReaction(handler func(emoji string))

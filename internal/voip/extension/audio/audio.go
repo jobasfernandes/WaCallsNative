@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	"wacalls/internal/voip/codec/mlow"
 	"wacalls/internal/voip/core"
 	"wacalls/internal/voip/engine"
 	"wacalls/internal/voip/media"
@@ -64,8 +65,44 @@ func (a *Audio) Detach() {
 	a.mu.Unlock()
 	if scope != nil {
 		scope.Observer.ReleaseMem(audioCodecBytes)
+		a.logOffPointCounts(scope)
 	}
 	a.codec.Close()
+}
+
+// logOffPointCounts reports, once per call, how many inbound frames the decoder
+// silenced and why. It exists to answer empirically whether operating points the
+// decoder does not implement (low_rate above all) actually reach us in the field:
+// "inactive" is expected DTX and dominates the count, so the reasons must stay
+// separate for the number to mean anything.
+func (a *Audio) logOffPointCounts(scope *engine.CallScope) {
+	counter, ok := a.codec.(core.OffPointCounter)
+	if !ok {
+		return
+	}
+	counts := counter.OffPointCounts()
+	if len(counts) == 0 {
+		return
+	}
+	attrs := []any{"call_id", scope.CallID}
+	unimplemented := 0
+	for _, reason := range []string{
+		mlow.OffPointInactive, mlow.OffPointStdOpus,
+		mlow.OffPointLowRate, mlow.OffPointSampleRate, mlow.OffPointFrameMs,
+	} {
+		n := counts[reason]
+		attrs = append(attrs, reason, n)
+		if reason != mlow.OffPointInactive && reason != mlow.OffPointStdOpus {
+			unimplemented += n
+		}
+	}
+	// An unimplemented operating point means real audio was replaced by silence,
+	// which is the case worth acting on; DTX and routed standard Opus are not.
+	if unimplemented > 0 {
+		scope.Log.Warn("inbound frames silenced on an unimplemented operating point", attrs...)
+		return
+	}
+	scope.Log.Info("inbound frames silenced", attrs...)
 }
 
 func (a *Audio) FeedPCM(pcm []float32) {

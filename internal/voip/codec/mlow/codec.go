@@ -29,3 +29,7 @@ func (c *mlowCodec) Decode(frame []byte) ([]float32, error) {
 func (c *mlowCodec) FrameSize() int  { return mlowFrameSize }
 func (c *mlowCodec) SampleRate() int { return mlowSampleRate }
 func (c *mlowCodec) Close()          {}
+
+func (c *mlowCodec) OffPointCounts() map[string]int { return c.dec.OffPointCounts() }
+
+var _ core.OffPointCounter = (*mlowCodec)(nil)
