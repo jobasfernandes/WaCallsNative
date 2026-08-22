@@ -204,3 +204,10 @@ func (c *Client) SetMute(ctx context.Context, callID string, muted bool) error {
 	}
 	return &CallError{"no call with id " + callID}
 }
+
+func (c *Client) SendReaction(callID, emoji string) error {
+	if cm, ok := c.get(callID); ok {
+		return cm.SendReaction(emoji)
+	}
+	return &CallError{"no call with id " + callID}
+}

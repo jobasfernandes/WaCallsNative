@@ -70,6 +70,27 @@ func (m *CallManager) ensureExtensionsAttachedLocked(ourDeviceJid, peerDeviceJid
 			}
 		})
 	}
+	if r, ok := engine.Capability[core.ReactionSink](m.extensions); ok {
+		// callID sai do scope antes do closure: o callback roda depois, quando
+		// m.mu pode estar tomado por outro caminho.
+		callID := scope.CallID
+		r.OnPeerReaction(func(emoji string) {
+			if m.OnReaction != nil {
+				m.OnReaction(callID, emoji)
+			}
+		})
+	}
+}
+
+// resetReactionState drops the dedup high-water mark held by the app-data
+// extension. Both media restarts need it: the peer's sender starts counting from
+// one again, and a stale mark swallows every later reaction without a trace.
+func (m *CallManager) resetReactionState() {
+	if r, ok := engine.Capability[core.ReactionSink](m.extensions); ok {
+		if ext, ok := r.(interface{ ResetPeerState() }); ok {
+			ext.ResetPeerState()
+		}
+	}
 }
 
 func (m *CallManager) sendAudioFrame(encoded []byte, frameSamples int) error {
