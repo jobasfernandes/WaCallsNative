@@ -40,5 +40,14 @@ func (c *codec) Close() {
 	c.inner.Close()
 }
 
+// OffPointCounts forwards the inner codec's report: only the encode path is
+// native, the inbound guard still lives in the pure-Go decoder.
+func (c *codec) OffPointCounts() map[string]int {
+	if r, ok := c.inner.(core.OffPointCounter); ok {
+		return r.OffPointCounts()
+	}
+	return nil
+}
+
 // Available reports whether the native encoder is compiled in.
 func Available() bool { return true }
