@@ -251,7 +251,10 @@ func (m *CallManager) onRelayData(data []byte) {
 		}
 		m.mu.Unlock()
 	}
-	if recvStats != nil {
+	// Only the audio stream feeds the quality metrics: it is the one continuous
+	// stream, so jitter and loss mean something. Sporadic streams carry their own
+	// sequence and timestamp space and would read as huge loss.
+	if recvStats != nil && pt == core.PayloadTypeWhatsAppOpus {
 		recvStats.NoteRTP(pkt.Header.SequenceNumber, pkt.Header.Timestamp, uint64(time.Now().UnixMilli()))
 	}
 	handler(pkt)
