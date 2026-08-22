@@ -93,6 +93,8 @@ export const en: Messages = {
     mute: "Mute microphone",
     unmute: "Unmute microphone",
     peerMuted: "Peer mic muted",
+    sendReaction: "Send reaction",
+    peerReacted: "Peer reacted",
     reconnectDropped: "Audio disconnected",
     reconnectingAudio: "Reconnecting audio…",
     reconnectCall: "Reconnect call",

@@ -68,6 +68,13 @@ const peerMuteEv = (id: string, muted: boolean) => ({
   muted,
 });
 
+const reactionEv = (id: string, emoji: string) => ({
+  type: "call-reaction" as const,
+  sessionId: "s1",
+  id,
+  emoji,
+});
+
 ensureCallsWired();
 
 describe("calls store event handlers", () => {
@@ -80,6 +87,7 @@ describe("calls store event handlers", () => {
       marks: new Map(),
       relays: new Map(),
       peerMuted: new Map(),
+      peerReaction: new Map(),
     });
   });
 
@@ -255,5 +263,37 @@ describe("calls store event handlers", () => {
       endedAt: 3,
     });
     expect(useCalls.getState().marks.has("c2")).toBe(false);
+  });
+  it("tracks the peer reaction for a live call and the latest event wins", () => {
+    emit({ type: "call-list", calls: [row("c1")] });
+    emit(reactionEv("c1", "\u{1F44D}"));
+    expect(useCalls.getState().peerReaction.get("c1")).toBe("\u{1F44D}");
+    emit(reactionEv("c1", "❤️"));
+    expect(useCalls.getState().peerReaction.get("c1")).toBe("❤️");
+  });
+
+  it("ignores a reaction for a call not in the live list", () => {
+    emit({ type: "call-list", calls: [row("c1")] });
+    emit(reactionEv("ghost", "\u{1F44D}"));
+    expect(useCalls.getState().peerReaction.has("ghost")).toBe(false);
+  });
+
+  it("call-list prunes orphaned reactions and call-ended clears them", () => {
+    emit({ type: "call-list", calls: [row("c1")] });
+    emit(reactionEv("c1", "\u{1F44D}"));
+    emit({ type: "call-list", calls: [] });
+    expect(useCalls.getState().peerReaction.size).toBe(0);
+
+    emit({ type: "call-list", calls: [row("c2")] });
+    emit(reactionEv("c2", "\u{1F44D}"));
+    emit({
+      type: "call-ended",
+      sessionId: "s1",
+      id: "c2",
+      owner: "op-A",
+      reason: "user_ended",
+      endedAt: 4,
+    });
+    expect(useCalls.getState().peerReaction.size).toBe(0);
   });
 });

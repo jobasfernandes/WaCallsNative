@@ -22,5 +22,10 @@ export const setMute = (sid: string, callId: string, muted: boolean) =>
     muted,
   });
 
+export const sendReaction = (sid: string, callId: string, emoji: string) =>
+  apiPost<{ status: string }>(`/api/sessions/${sid}/calls/${callId}/reaction`, {
+    emoji,
+  });
+
 export const endCall = (sid: string, callId: string) =>
   apiDelete(`/api/sessions/${sid}/calls/${callId}`);

@@ -84,6 +84,12 @@ export type BrokerEvent =
       sessionId: string;
       id: string;
       muted: boolean;
+    }
+  | {
+      type: "call-reaction";
+      sessionId: string;
+      id: string;
+      emoji: string;
     };
 
 type Listener = (ev: BrokerEvent) => void;
