@@ -19,6 +19,7 @@ type State = {
   marks: Map<string, SetupMark[]>;
   relays: Map<string, RelaySample>;
   peerMuted: Map<string, boolean>;
+  peerReaction: Map<string, string>;
 };
 
 export const useCalls = create<State>(() => ({
@@ -29,6 +30,7 @@ export const useCalls = create<State>(() => ({
   marks: new Map(),
   relays: new Map(),
   peerMuted: new Map(),
+  peerReaction: new Map(),
 }));
 
 let wired = false;
@@ -47,7 +49,17 @@ export const ensureCallsWired = (): void => {
         const peerMuted = new Map(
           [...s.peerMuted].filter(([id]) => ids.has(id)),
         );
-        return { calls: ev.calls, quality, marks, relays, peerMuted };
+        const peerReaction = new Map(
+          [...s.peerReaction].filter(([id]) => ids.has(id)),
+        );
+        return {
+          calls: ev.calls,
+          quality,
+          marks,
+          relays,
+          peerMuted,
+          peerReaction,
+        };
       });
     } else if (ev.type === "call-status") {
       useCalls.setState((s) => ({
@@ -111,6 +123,14 @@ export const ensureCallsWired = (): void => {
         next.set(ev.id, ev.muted);
         return { peerMuted: next };
       });
+    } else if (ev.type === "call-reaction") {
+      useCalls.setState((s) => {
+        // Mesma disciplina de straggler do call-peer-mute: so chamada viva.
+        if (!s.calls.some((c) => c.callId === ev.id)) return s;
+        const next = new Map(s.peerReaction);
+        next.set(ev.id, ev.emoji);
+        return { peerReaction: next };
+      });
     } else if (ev.type === "call-ended") {
       useCalls.setState((s) => {
         const conn = s.ownConnections.get(ev.id);
@@ -125,6 +145,8 @@ export const ensureCallsWired = (): void => {
         nextRelays.delete(ev.id);
         const nextPeerMuted = new Map(s.peerMuted);
         nextPeerMuted.delete(ev.id);
+        const nextPeerReaction = new Map(s.peerReaction);
+        nextPeerReaction.delete(ev.id);
         return {
           calls: s.calls.filter((c) => c.callId !== ev.id),
           ownConnections: next,
@@ -132,6 +154,7 @@ export const ensureCallsWired = (): void => {
           marks: nextMarks,
           relays: nextRelays,
           peerMuted: nextPeerMuted,
+          peerReaction: nextPeerReaction,
           incoming: s.incoming?.callId === ev.id ? null : s.incoming,
         };
       });

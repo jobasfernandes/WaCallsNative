@@ -40,7 +40,16 @@ const (
 )
 
 const (
-	PayloadTypeWhatsAppOpus = 120
+	PayloadTypeWhatsAppOpus    = 120
+	PayloadTypeWhatsAppAppData = 119
+)
+
+// SSRC counters index the ~12-SSRC set WhatsApp allocates per device; both sides
+// derive the same values from (callID, deviceJID, counter), which is how they
+// learn each other's SSRCs without SDP. Values come from captured traffic.
+const (
+	SsrcCounterAudio   uint32 = 0
+	SsrcCounterAppData uint32 = 6
 )
 
 const (

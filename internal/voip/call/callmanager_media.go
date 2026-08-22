@@ -53,6 +53,7 @@ func (m *CallManager) ensureExtensionsAttachedLocked(ourDeviceJid, peerDeviceJid
 		PeerDeviceJID:   peerDeviceJid,
 		Relay:           m.relay,
 		SendAudioFrame:  m.sendAudioFrame,
+		SendRTP:         m.sendRTP,
 		OnRTP:           m.registerRTPHandler,
 		DeclareSelfSSRC: m.declareSelfSSRC,
 		Observer:        m.observer,
@@ -68,6 +69,27 @@ func (m *CallManager) ensureExtensionsAttachedLocked(ourDeviceJid, peerDeviceJid
 				m.OnPeerAudio(pcm)
 			}
 		})
+	}
+	if r, ok := engine.Capability[core.ReactionSink](m.extensions); ok {
+		// callID sai do scope antes do closure: o callback roda depois, quando
+		// m.mu pode estar tomado por outro caminho.
+		callID := scope.CallID
+		r.OnPeerReaction(func(emoji string) {
+			if m.OnReaction != nil {
+				m.OnReaction(callID, emoji)
+			}
+		})
+	}
+}
+
+// resetReactionState drops the dedup high-water mark held by the app-data
+// extension. Both media restarts need it: the peer's sender starts counting from
+// one again, and a stale mark swallows every later reaction without a trace.
+func (m *CallManager) resetReactionState() {
+	if r, ok := engine.Capability[core.ReactionSink](m.extensions); ok {
+		if ext, ok := r.(interface{ ResetPeerState() }); ok {
+			ext.ResetPeerState()
+		}
 	}
 }
 
@@ -94,6 +116,24 @@ func (m *CallManager) sendAudioFrame(encoded []byte, frameSamples int) error {
 	protected, err := m.srtp.Protect(pkt)
 	if err != nil {
 		m.log.Debug("srtp protect error", "err", err)
+		return err
+	}
+	m.relay.Broadcast(protected)
+	return nil
+}
+
+// sendRTP protects and broadcasts a packet an extension built itself. Unlike
+// sendAudioFrame it owns no sequence/timestamp state: a stream other than audio
+// keeps its own, so nothing here touches the audio counters or the RTCP stats.
+func (m *CallManager) sendRTP(pkt *media.RtpPacket) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.srtp == nil || m.relay == nil {
+		return &CallError{"media not established"}
+	}
+	protected, err := m.srtp.Protect(pkt)
+	if err != nil {
+		m.log.Debug("srtp protect error", "pt", pkt.Header.PayloadType, "err", err)
 		return err
 	}
 	m.relay.Broadcast(protected)
@@ -232,7 +272,10 @@ func (m *CallManager) onRelayData(data []byte) {
 		}
 		m.mu.Unlock()
 	}
-	if recvStats != nil {
+	// Only the audio stream feeds the quality metrics: it is the one continuous
+	// stream, so jitter and loss mean something. Sporadic streams carry their own
+	// sequence and timestamp space and would read as huge loss.
+	if recvStats != nil && pt == core.PayloadTypeWhatsAppOpus {
 		recvStats.NoteRTP(pkt.Header.SequenceNumber, pkt.Header.Timestamp, uint64(time.Now().UnixMilli()))
 	}
 	handler(pkt)

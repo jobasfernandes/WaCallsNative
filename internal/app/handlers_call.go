@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"wacalls/internal/app/events"
 	"wacalls/internal/app/session"
@@ -184,6 +185,44 @@ func (s *Server) doMute(sess *session.Session, w http.ResponseWriter, r *http.Re
 		return
 	} else if err != nil {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
+}
+
+const maxReactionEmojiBytes = 64
+
+// validReactionEmoji is boundary validation only: the protocol has no emoji
+// allowlist, so this rejects just what would break the encode or the wire.
+func validReactionEmoji(emoji string) bool {
+	return len(emoji) <= maxReactionEmojiBytes && utf8.ValidString(emoji)
+}
+
+func (s *Server) handleReaction(w http.ResponseWriter, r *http.Request) {
+	if sess := s.sessionByID(w, r.PathValue("sid")); sess != nil {
+		s.doReaction(sess, w, r)
+	}
+}
+
+func (s *Server) doReaction(sess *session.Session, w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if !sess.HasCall(id) {
+		writeJSON(w, http.StatusNotFound, map[string]string{"error": "no such call"})
+		return
+	}
+	var body struct {
+		Emoji *string `json:"emoji"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Emoji == nil {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "emoji required"})
+		return
+	}
+	if !validReactionEmoji(*body.Emoji) {
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid emoji"})
+		return
+	}
+	if err := sess.SendReaction(id, *body.Emoji); err != nil {
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})

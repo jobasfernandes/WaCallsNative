@@ -63,6 +63,9 @@ func (m *CallManager) reinitSrtpLocked(peerKey []byte, peerJid types.JID) {
 	m.srtp = engine.NewSrtpManager(sendKM, recvKM, core.SRTPSendAuthTagLen, core.SRTPRecvAuthTagLen)
 	m.srtp.SetObserver(m.observer)
 	m.setupSrtcpLocked(sendKM, recvKM)
+	// O rekey troca a chave de recepcao: o remetente do peer recomeca, e um
+	// high-water mark antigo engoliria toda reaction seguinte sem log.
+	m.resetReactionState()
 	m.log.Debug("srtp re-initialized with peer call key")
 }
 

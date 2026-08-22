@@ -15,6 +15,11 @@ type AudioSink interface {
 	OnPeerPCM(handler func(pcm []float32))
 }
 
+type ReactionSink interface {
+	SendReaction(emoji string) error
+	OnPeerReaction(handler func(emoji string))
+}
+
 type Session struct {
 	ID   string
 	Name string

@@ -65,6 +65,8 @@ type CallManager struct {
 	rtcpSRTick     time.Duration
 	rtcp209Tick    time.Duration
 
+	lastReactionAt time.Time
+
 	extensions   []engine.Extension
 	extMu        sync.Mutex
 	rtpHandlers  map[uint8]func(*media.RtpPacket)
@@ -79,7 +81,12 @@ type CallManager struct {
 	OnMark        func(callID string, mark string, elapsedMs int64)
 	OnRelay       func(callID, relayName string, rttMs int, hasRtt bool)
 	OnPeerMute    func(callID string, muted bool)
+	OnReaction    func(callID, emoji string)
 }
+
+// reactionMinInterval throttles outbound reactions: each one costs ten packets on
+// the relay uplink, which competes with audio if a client repeats the click.
+const reactionMinInterval = 500 * time.Millisecond
 
 func NewCallManager(sock signaling.Socket, log *slog.Logger, exts ...engine.Extension) *CallManager {
 	if log == nil {
@@ -311,6 +318,29 @@ func (m *CallManager) SetMute(ctx context.Context, muted bool) error {
 
 	m.sendSignaling(ctx, node)
 	return nil
+}
+
+// SendReaction sends an emoji reaction over the app-data media stream. Unlike
+// SetMute this rides media, not signaling, so it applies no state transition.
+func (m *CallManager) SendReaction(emoji string) error {
+	m.mu.Lock()
+	call := m.currentCall
+	if call == nil || call.IsEnded() {
+		m.mu.Unlock()
+		return &CallError{"no active call"}
+	}
+	if !m.lastReactionAt.IsZero() && time.Since(m.lastReactionAt) < reactionMinInterval {
+		m.mu.Unlock()
+		return &CallError{"reaction rate limited"}
+	}
+	m.lastReactionAt = time.Now()
+	m.mu.Unlock()
+
+	sink, ok := engine.Capability[core.ReactionSink](m.extensions)
+	if !ok {
+		return &CallError{"reactions unavailable on this call"}
+	}
+	return sink.SendReaction(emoji)
 }
 
 func (m *CallManager) ownCredJid() string {

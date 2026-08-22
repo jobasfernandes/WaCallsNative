@@ -278,6 +278,8 @@ func (m *CallManager) cleanupMedia() {
 	m.outgoingPreacceptSent = false
 	m.actualPeerSet = false
 	m.extAttached = false
+	m.lastReactionAt = time.Time{}
+	m.resetReactionState()
 	m.lastMediaRecv.Store(0)
 	if m.watchdogStop != nil {
 		close(m.watchdogStop)

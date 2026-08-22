@@ -13,6 +13,7 @@ import { useCalls } from "@/stores/calls";
 import { useDevices } from "@/stores/devices";
 import { useEndCall } from "@/hooks/useEndCall";
 import { useSetMute } from "@/hooks/useSetMute";
+import { useSendReaction } from "@/hooks/useSendReaction";
 import { useResumeCall } from "@/hooks/useResumeCall";
 import { needsAudioResume } from "@/lib/resume";
 import { useT } from "@/hooks/useT";
@@ -245,15 +246,28 @@ const ReconnectingNotice = () => {
   );
 };
 
+// O conjunto que o protocolo carrega em trafego capturado. Emoji arbitrario e
+// aceito no fio; a UI oferece esses para nao precisar de um seletor completo.
+const reactionEmojis = [
+  "\u{1F44D}",
+  "❤️",
+  "\u{1F602}",
+  "\u{1F62E}",
+  "\u{1F622}",
+  "\u{1F64F}",
+];
+
 export const CallCard = ({ call }: { call: CallSummary }) => {
   const conn = useCalls((s) => s.ownConnections.get(call.callId));
   const quality = useCalls((s) => s.quality.get(call.callId));
   const marks = useCalls((s) => s.marks.get(call.callId));
   const peerMuted = useCalls((s) => s.peerMuted.get(call.callId) ?? false);
+  const peerReaction = useCalls((s) => s.peerReaction.get(call.callId));
   const outDeviceId = useDevices((s) => s.outId);
   const micId = useDevices((s) => s.micId);
   const endCall = useEndCall();
   const setMute = useSetMute();
+  const sendReaction = useSendReaction();
   const resume = useResumeCall(call.sessionId, micId);
   const t = useT();
   // A CallCard only renders for calls this browser owns (CallsPage filters by isMine),
@@ -423,6 +437,36 @@ export const CallCard = ({ call }: { call: CallSummary }) => {
             <Meter label={t.calls.mic} db={micDb} />
             <Meter label={t.calls.peer} db={peerDb} />
           </>
+        )}
+        {call.status === "connected" && (
+          <div
+            className="flex items-center gap-1"
+            aria-label={t.calls.sendReaction}
+          >
+            {reactionEmojis.map((emoji) => (
+              <button
+                key={emoji}
+                type="button"
+                title={t.calls.sendReaction}
+                className="rounded px-1.5 py-0.5 text-base hover:bg-muted"
+                onClick={() =>
+                  sendReaction.mutate({
+                    sid: call.sessionId,
+                    callId: call.callId,
+                    emoji,
+                  })
+                }
+              >
+                {emoji}
+              </button>
+            ))}
+          </div>
+        )}
+        {peerReaction && (
+          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <span className="text-base">{peerReaction}</span>
+            {t.calls.peerReacted}
+          </div>
         )}
         {peerMuted && (
           <div className="flex items-center gap-1.5 text-xs text-muted-foreground">

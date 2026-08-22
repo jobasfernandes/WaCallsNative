@@ -28,6 +28,7 @@ var apiRoutes = []struct {
 	{"POST", "/sessions/{sid}/calls/{id}/accept", (*Server).handleAccept},
 	{"POST", "/sessions/{sid}/calls/{id}/reject", (*Server).handleReject},
 	{"POST", "/sessions/{sid}/calls/{id}/mute", (*Server).handleMute},
+	{"POST", "/sessions/{sid}/calls/{id}/reaction", (*Server).handleReaction},
 	{"DELETE", "/sessions/{sid}/calls/{id}", (*Server).handleEndCall},
 	{"GET", "/sessions/{sid}/history", (*Server).handleHistory},
 	{"GET", "/sessions/{sid}/history/export", (*Server).handleHistoryExport},
