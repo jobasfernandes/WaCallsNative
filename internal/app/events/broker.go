@@ -181,6 +181,15 @@ func (b *Broker) EmitCallPeerMute(sessionID, callID string, muted bool) {
 	})
 }
 
+// EmitCallReaction broadcasts an emoji reaction received over the app-data media
+// stream. Transient live-only signal like call-peer-mute: never persisted.
+func (b *Broker) EmitCallReaction(sessionID, callID, emoji string) {
+	b.broadcast(map[string]any{
+		"type": "call-reaction", "sessionId": sessionID, "id": callID,
+		"emoji": emoji,
+	})
+}
+
 func (b *Broker) ServeSSE(w http.ResponseWriter, r *http.Request, clientID string) {
 	flusher, ok := w.(http.Flusher)
 	if !ok {

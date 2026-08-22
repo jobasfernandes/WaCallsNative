@@ -377,6 +377,59 @@ paths:
                 $ref: "#/components/schemas/Error"
         "429": { $ref: "#/components/responses/RateLimited" }
         "500": { $ref: "#/components/responses/InternalError" }
+  /api/sessions/{sid}/calls/{id}/reaction:
+    post:
+      operationId: sendCallReaction
+      summary: Send an emoji reaction to the peer over the call's app-data stream
+      description: >-
+        Carries the reaction as media, on the RTC app-data stream, not as
+        signaling. The reaction is transient: it is broadcast to connected
+        browsers as a call-reaction event and never persisted. Rate limited to
+        one reaction every 500 ms per call.
+      parameters:
+        - $ref: "#/components/parameters/Sid"
+        - $ref: "#/components/parameters/CallId"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [emoji]
+              properties:
+                emoji:
+                  type: string
+                  maxLength: 64
+                  description: >-
+                    Any valid UTF-8 emoji. An empty string clears the previous
+                    reaction.
+      responses:
+        "200":
+          description: Reaction sent
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status:
+                    type: string
+                    const: ok
+        "400":
+          description: Missing or invalid emoji field
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "404": { $ref: "#/components/responses/NotFound" }
+        "409":
+          description: Call has no active media, or the rate limit was hit
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Error"
+        "429": { $ref: "#/components/responses/RateLimited" }
   /api/sessions/{sid}/history:
     get:
       operationId: listHistory
@@ -628,6 +681,7 @@ paths:
                   - $ref: "#/components/schemas/CallMarkEvent"
                   - $ref: "#/components/schemas/CallRelayEvent"
                   - $ref: "#/components/schemas/CallPeerMuteEvent"
+                  - $ref: "#/components/schemas/CallReactionEvent"
                   - $ref: "#/components/schemas/PingEvent"
         "401": { $ref: "#/components/responses/Unauthorized" }
         "429": { $ref: "#/components/responses/RateLimited" }
@@ -1064,6 +1118,23 @@ components:
           type: string
         muted:
           type: boolean
+    CallReactionEvent:
+      type: object
+      description: >-
+        An emoji reaction the peer sent over the call's RTC app-data stream.
+        The latest event reflects the current reaction; an empty emoji clears it.
+        Transient, not persisted.
+      required: [type, sessionId, id, emoji]
+      properties:
+        type:
+          type: string
+          const: call-reaction
+        sessionId:
+          type: string
+        id:
+          type: string
+        emoji:
+          type: string
     PingEvent:
       type: object
       required: [type]

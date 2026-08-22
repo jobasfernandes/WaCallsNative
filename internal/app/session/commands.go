@@ -67,6 +67,10 @@ func (s *Session) SetMute(ctx context.Context, callID string, muted bool) error 
 	return s.calls.SetMute(ctx, callID, muted)
 }
 
+func (s *Session) SendReaction(callID, emoji string) error {
+	return s.calls.SendReaction(callID, emoji)
+}
+
 func (s *Session) EndCall(ctx context.Context, callID string) error {
 	err := s.calls.EndCall(ctx, callID, core.EndCallReasonUserEnded)
 	s.removeCall(callID)

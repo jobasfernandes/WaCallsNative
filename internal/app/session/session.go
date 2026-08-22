@@ -16,6 +16,7 @@ import (
 	"wacalls/internal/voip/codec/opus"
 	"wacalls/internal/voip/core"
 	"wacalls/internal/voip/engine"
+	"wacalls/internal/voip/extension/appdata"
 	"wacalls/internal/voip/extension/audio"
 	"wacalls/internal/wa"
 
@@ -87,6 +88,7 @@ func (s *Session) makeExtensions() []engine.Extension {
 	} else {
 		s.log.Warn("MLow codec unavailable; call runs without audio", "err", err)
 	}
+	exts = append(exts, appdata.New())
 	return exts
 }
 
@@ -158,6 +160,9 @@ func (s *Session) wireCall(callID string, cm *call.CallManager) {
 	}
 	cm.OnPeerMute = func(callID string, muted bool) {
 		s.mgr.broker.EmitCallPeerMute(s.id, callID, muted)
+	}
+	cm.OnReaction = func(callID, emoji string) {
+		s.mgr.broker.EmitCallReaction(s.id, callID, emoji)
 	}
 }
 
