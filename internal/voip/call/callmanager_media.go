@@ -53,6 +53,7 @@ func (m *CallManager) ensureExtensionsAttachedLocked(ourDeviceJid, peerDeviceJid
 		PeerDeviceJID:   peerDeviceJid,
 		Relay:           m.relay,
 		SendAudioFrame:  m.sendAudioFrame,
+		SendRTP:         m.sendRTP,
 		OnRTP:           m.registerRTPHandler,
 		DeclareSelfSSRC: m.declareSelfSSRC,
 		Observer:        m.observer,
@@ -94,6 +95,24 @@ func (m *CallManager) sendAudioFrame(encoded []byte, frameSamples int) error {
 	protected, err := m.srtp.Protect(pkt)
 	if err != nil {
 		m.log.Debug("srtp protect error", "err", err)
+		return err
+	}
+	m.relay.Broadcast(protected)
+	return nil
+}
+
+// sendRTP protects and broadcasts a packet an extension built itself. Unlike
+// sendAudioFrame it owns no sequence/timestamp state: a stream other than audio
+// keeps its own, so nothing here touches the audio counters or the RTCP stats.
+func (m *CallManager) sendRTP(pkt *media.RtpPacket) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.srtp == nil || m.relay == nil {
+		return &CallError{"media not established"}
+	}
+	protected, err := m.srtp.Protect(pkt)
+	if err != nil {
+		m.log.Debug("srtp protect error", "pt", pkt.Header.PayloadType, "err", err)
 		return err
 	}
 	m.relay.Broadcast(protected)
