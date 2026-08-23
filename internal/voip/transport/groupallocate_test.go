@@ -83,7 +83,8 @@ func TestGroupAllocateParticipantCount(t *testing.T) {
 		{"one", []uint32{1}, 1},
 		{"two", []uint32{1, 2}, 2},
 		{"deduplicated", []uint32{1, 2, 2}, 2},
-		{"zero dropped", []uint32{0, 1}, 1},
+		{"zero kept", []uint32{0, 1}, 2},
+		{"zero alone", []uint32{0}, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			msg := BuildGroupAllocate(groupParams(tc.pids, [2]uint32{}))
@@ -117,4 +118,30 @@ func TestGroupAllocateIsAnAllocateRequest(t *testing.T) {
 	if declared, actual := int(binary.BigEndian.Uint16(msg[2:4])), len(msg)-20; declared != actual {
 		t.Errorf("declared length %d, actual %d", declared, actual)
 	}
+}
+
+// Um participante com PID 0 tem de aparecer nas duas direcoes. Sem ele o
+// participante fica sem receber a nossa voz e as nossas reacoes, e nos ficamos
+// sem receber a dele.
+func TestGroupAllocateKeepsParticipantZero(t *testing.T) {
+	withZero := BuildGroupAllocate(groupParams([]uint32{0, 1}, [2]uint32{900, 901}))
+	onlyOne := BuildGroupAllocate(groupParams([]uint32{1}, [2]uint32{900, 901}))
+	if len(withZero) <= len(onlyOne) {
+		t.Fatalf("PID 0 must add subscriptions: %d bytes vs %d", len(withZero), len(onlyOne))
+	}
+	// Dois participantes sao o que poe o relay em modo de encaminhamento, e o
+	// HBH-FEC so entra ai.
+	body := withZero[20:]
+	for len(body) >= 4 {
+		typ := int(binary.BigEndian.Uint16(body[0:2]))
+		length := int(binary.BigEndian.Uint16(body[2:4]))
+		if typ == attrParticipantCount {
+			if body[4] != 2 {
+				t.Fatalf("participant count = %d, want 2 with PIDs 0 and 1", body[4])
+			}
+			return
+		}
+		body = body[4+length+(4-length%4)%4:]
+	}
+	t.Fatal("participant count attribute not found")
 }

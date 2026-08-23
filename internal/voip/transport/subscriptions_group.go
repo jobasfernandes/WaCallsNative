@@ -20,12 +20,17 @@ const (
 	hbhFECLayer             = 3
 )
 
-// NormalizeParticipantPIDs sorts and deduplicates the connected remote PIDs and
-// drops zero, which is the local participant and is never subscribed to.
+// NormalizeParticipantPIDs sorts and deduplicates the connected remote PIDs.
+//
+// Zero is a participant id like any other: the capture has the original peer
+// holding PID 0 while the local device holds 1. Callers already exclude the
+// local device by JID and skip devices that carry no PID at all, so dropping
+// zero here silently unsubscribed a real participant from both directions and
+// shrank the count below the two that make the relay switch to forwarding.
 func NormalizeParticipantPIDs(pids []uint32) []uint32 {
 	var out []uint32
 	for _, pid := range pids {
-		if pid == 0 || slices.Contains(out, pid) {
+		if slices.Contains(out, pid) {
 			continue
 		}
 		out = append(out, pid)
