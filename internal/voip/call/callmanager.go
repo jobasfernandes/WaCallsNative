@@ -67,6 +67,9 @@ type CallManager struct {
 
 	lastReactionAt time.Time
 
+	// group stays nil on a 1:1 call.
+	group *GroupState
+
 	extensions   []engine.Extension
 	extMu        sync.Mutex
 	rtpHandlers  map[uint8]func(*media.RtpPacket)
