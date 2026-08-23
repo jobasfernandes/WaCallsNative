@@ -233,3 +233,25 @@ func TestSrtpManager_RekeyClearsPerSsrcKeys(t *testing.T) {
 		t.Fatalf("the post-rekey key must authenticate: %v", err)
 	}
 }
+
+// Numa chamada de grupo o que enviamos e cifrado com a chave derivada da epoch
+// compartilhada, nao da callKey 1:1: sem isso ninguem decodifica o nosso audio.
+func TestSrtpManager_SetSendKey(t *testing.T) {
+	original, epoch, peer := testKM(1), testKM(5), testKM(9)
+	sender := NewSrtpManager(original, peer, core.SRTPSendAuthTagLen, core.SRTPRecvAuthTagLen)
+
+	// Um pacote antes da troca cria o contexto com a chave original.
+	mustProtect(t, sender, rtpPkt(7, 1, []byte{0x01}))
+
+	sender.SetSendKey(epoch)
+
+	wire := mustProtect(t, sender, rtpPkt(7, 2, []byte{0x02}))
+	withEpoch := NewSrtpManager(peer, epoch, core.SRTPRecvAuthTagLen, core.SRTPSendAuthTagLen)
+	if _, err := withEpoch.Unprotect(wire); err != nil {
+		t.Fatalf("after SetSendKey the new key must be in use: %v", err)
+	}
+	withOriginal := NewSrtpManager(peer, original, core.SRTPRecvAuthTagLen, core.SRTPSendAuthTagLen)
+	if _, err := withOriginal.Unprotect(wire); err == nil {
+		t.Error("the old send key must stop being used, including for a stream already started")
+	}
+}

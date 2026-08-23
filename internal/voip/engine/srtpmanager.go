@@ -113,6 +113,23 @@ func (m *SrtpManager) Unprotect(data []byte) (*media.RtpPacket, error) {
 	return ctx.Unprotect(data)
 }
 
+// SetSendKey replaces the key outbound media is encrypted with. A group call
+// keys off the shared epoch instead of the 1:1 call key, so contexts already
+// built with the old key are dropped: keeping them would keep encrypting with a
+// key the other participants cannot read.
+func (m *SrtpManager) SetSendKey(sendKM core.SrtpKeyingMaterial) {
+	m.mu.Lock()
+	released := int64(len(m.send)) * srtpContextBytes
+	m.mem -= released
+	obs := m.observer
+	m.sendKM = sendKM
+	m.send = map[uint32]*media.SrtpContext{}
+	m.mu.Unlock()
+	if released > 0 {
+		obs.ReleaseMem(released)
+	}
+}
+
 func (m *SrtpManager) RekeyRecv(recvKM core.SrtpKeyingMaterial) {
 	m.mu.Lock()
 	released := int64(len(m.recv)) * srtpContextBytes

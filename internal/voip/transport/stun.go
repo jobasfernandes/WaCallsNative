@@ -18,17 +18,24 @@ const (
 	stunAllocateRequest = 0x0003
 	whatsappPing        = 0x0801
 
-	attrUsername            = 0x0006
-	attrMessageIntegrity    = 0x0008
-	attrLifetime            = 0x000d
-	attrXorRelayedAddress   = 0x0016
-	attrRequestedTransport  = 0x0019
-	attrPriority            = 0x0024
-	attrSenderSubscriptions = 0x4000
-	attrSsrcList            = 0x4024
-	attrIceControlled       = 0x8029
-	attrIceControlling      = 0x802a
-	attrFingerprint         = 0x8028
+	attrUsername           = 0x0006
+	attrMessageIntegrity   = 0x0008
+	attrLifetime           = 0x000d
+	attrXorRelayedAddress  = 0x0016
+	attrRequestedTransport = 0x0019
+	attrPriority           = 0x0024
+	// The names below follow the captured client, not the parameter names this
+	// package used before: 0x4000 carries the relay token and 0x4024 the stream
+	// descriptors. The actual subscriptions are 0x4025 and 0x4021, which a 1:1
+	// call does not send at all.
+	attrRelayToken        = 0x4000
+	attrStreamDescriptors = 0x4024
+	attrSenderSubs        = 0x4025
+	attrReceiverSubs      = 0x4021
+	attrParticipantCount  = 0x805a
+	attrIceControlled     = 0x8029
+	attrIceControlling    = 0x802a
+	attrFingerprint       = 0x8028
 
 	defaultICEPriority = 16_777_215
 )
@@ -115,8 +122,8 @@ func encodeXorRelayedAddress(ip string, port int) []byte {
 func BuildAllocateForRelay(senderSubscriptions, ssrcList, hmacKey []byte, relayIP string, relayPort int) []byte {
 	txid := generateTransactionID()
 	var parts [][]byte
-	parts = append(parts, encodeAttribute(attrSenderSubscriptions, senderSubscriptions))
-	parts = append(parts, encodeAttribute(attrSsrcList, ssrcList))
+	parts = append(parts, encodeAttribute(attrRelayToken, senderSubscriptions))
+	parts = append(parts, encodeAttribute(attrStreamDescriptors, ssrcList))
 	if relayIP != "" && relayPort != 0 {
 		parts = append(parts, encodeAttribute(attrXorRelayedAddress, encodeXorRelayedAddress(relayIP, relayPort)))
 	}
@@ -142,7 +149,7 @@ func BuildBindingRequestWithSubs(username, hmacKey, senderSubscriptions []byte, 
 	}
 
 	if len(senderSubscriptions) > 0 {
-		parts = append(parts, encodeAttribute(attrSenderSubscriptions, senderSubscriptions))
+		parts = append(parts, encodeAttribute(attrRelayToken, senderSubscriptions))
 	}
 
 	var key []byte
@@ -376,4 +383,49 @@ func concat(parts ...[]byte) []byte {
 		out = append(out, p...)
 	}
 	return out
+}
+
+// GroupAllocateParams carries everything the relay needs to switch a call into
+// multi-participant mode.
+type GroupAllocateParams struct {
+	RelayToken  []byte
+	Streams     [9]uint32
+	AppDataSSRC uint32
+	// PIDs are the connected remote participants. HBH-FEC descriptors are only
+	// advertised with more than one, which is what the captured client does.
+	PIDs      []uint32
+	HBHFEC    [2]uint32
+	HMACKey   []byte
+	RelayIP   string
+	RelayPort int
+}
+
+// BuildGroupAllocate builds the allocate a group call sends. It is the 1:1
+// allocate plus three attributes, in the order the captured client emits them:
+// relay token, sender subscriptions, receiver subscriptions, stream descriptors,
+// participant count, relay endpoint, message integrity.
+func BuildGroupAllocate(p GroupAllocateParams) []byte {
+	pids := NormalizeParticipantPIDs(p.PIDs)
+	hbhFEC := p.HBHFEC
+	if len(pids) <= 1 {
+		// One remote participant keeps the nine local descriptors only; the relay
+		// only switches to SFU mode, and needs the FEC pair, beyond that.
+		hbhFEC = [2]uint32{}
+	}
+	var parts [][]byte
+	parts = append(parts, encodeAttribute(attrRelayToken, p.RelayToken))
+	parts = append(parts, encodeAttribute(attrSenderSubs,
+		BuildGroupSenderSubscriptions(p.Streams, p.AppDataSSRC, pids)))
+	parts = append(parts, encodeAttribute(attrReceiverSubs,
+		BuildGroupReceiverSubscriptions(pids)))
+	parts = append(parts, encodeAttribute(attrStreamDescriptors,
+		BuildGroupStreamDescriptors(p.Streams, hbhFEC)))
+	count := make([]byte, 1)
+	count[0] = byte(len(pids))
+	parts = append(parts, encodeAttribute(attrParticipantCount, count))
+	if p.RelayIP != "" && p.RelayPort != 0 {
+		parts = append(parts, encodeAttribute(attrXorRelayedAddress,
+			encodeXorRelayedAddress(p.RelayIP, p.RelayPort)))
+	}
+	return buildStunMessage(stunAllocateRequest, concat(parts...), generateTransactionID(), p.HMACKey, false)
 }

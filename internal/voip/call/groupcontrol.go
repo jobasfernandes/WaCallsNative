@@ -2,10 +2,12 @@ package call
 
 import (
 	"context"
+	"crypto/rand"
 
 	"wacalls/internal/voip/core"
 	"wacalls/internal/voip/media"
 	"wacalls/internal/voip/signaling"
+	"wacalls/internal/voip/transport"
 	"wacalls/internal/voip/wanode"
 
 	waBinary "go.mau.fi/whatsmeow/binary"
@@ -188,10 +190,115 @@ func (m *CallManager) syncGroupRecvKeysLocked() {
 			registered++
 		}
 	}
+	m.applyGroupSendKeyLocked()
+	m.applyGroupAllocateLocked()
 	if registered > 0 {
 		m.log.Info("participant receive keys registered",
 			"call_id", call.CallID,
 			"transaction_id", m.group.TransactionID,
 			"devices", registered)
 	}
+}
+
+// applyGroupSendKeyLocked switches outbound media to the shared epoch. A group
+// call is not encrypted with the 1:1 call key, so without this nobody can decode
+// what we send. Caller holds m.mu.
+func (m *CallManager) applyGroupSendKeyLocked() {
+	call := m.currentCall
+	if call == nil || m.srtp == nil || len(m.group.Epoch) == 0 {
+		return
+	}
+	ourDeviceJid := m.ourDeviceJidLocked()
+	if ourDeviceJid == "" {
+		return
+	}
+	sendKM, err := media.DerivePerJidSrtpKey(m.group.Epoch, ourDeviceJid)
+	if err != nil {
+		m.log.Warn("group send key derivation failed",
+			"call_id", call.CallID, "device", ourDeviceJid, "err", err)
+		return
+	}
+	if m.groupSendKeySet {
+		return
+	}
+	m.srtp.SetSendKey(sendKM)
+	m.groupSendKeySet = true
+	m.log.Info("group send key installed", "call_id", call.CallID, "device", ourDeviceJid)
+}
+
+// applyGroupAllocateLocked tells the relay the group shape and resends the
+// allocate when the participant set changed. The resend is driven by the PID set
+// itself, not by a relay transaction id: a participant that joins without the
+// relay bumping that id would otherwise never have their media subscribed.
+// Caller holds m.mu.
+func (m *CallManager) applyGroupAllocateLocked() {
+	call := m.currentCall
+	if call == nil || m.relay == nil || m.group == nil || m.group.Roster == nil {
+		return
+	}
+	ourDeviceJid := m.ourDeviceJidLocked()
+	if ourDeviceJid == "" {
+		m.log.Debug("group allocate deferred: own device JID not known yet",
+			"call_id", call.CallID)
+		return
+	}
+	streams := transport.DeriveRelayStreamSSRCs(call.CallID, ourDeviceJid)
+	appData := media.GenerateSecureSsrc(call.CallID, ourDeviceJid, core.SsrcCounterAppData)
+	streams, err := transport.PrepareRelayStreamSSRCs(streams, appData, rand.Reader)
+	if err != nil {
+		m.log.Warn("relay stream SSRC preparation failed", "call_id", call.CallID, "err", err)
+		return
+	}
+	changed := m.relay.SetGroupAllocate(transport.GroupAllocateConfig{
+		Streams:     streams,
+		AppDataSSRC: appData,
+		PIDs:        m.remotePIDsLocked(),
+		HBHFEC: [2]uint32{
+			media.GenerateSecureSsrc(call.CallID, ourDeviceJid, transport.HBHFECTXSlotWord),
+			media.GenerateSecureSsrc(call.CallID, ourDeviceJid, transport.HBHFECRXSlotWord),
+		},
+	})
+	if !changed {
+		return
+	}
+	m.log.Info("group allocate updated",
+		"call_id", call.CallID, "participants", len(m.remotePIDsLocked()))
+	go m.relay.ResendSubscriptions()
+}
+
+// remotePIDsLocked lists the participant ids of every connected remote device.
+// Caller holds m.mu.
+func (m *CallManager) remotePIDsLocked() []uint32 {
+	if m.group == nil || m.group.Roster == nil {
+		return nil
+	}
+	ourBase := wanode.CleanJID(m.ownCredJid())
+	var pids []uint32
+	for _, participant := range m.group.Roster.Participants {
+		for _, device := range participant.Devices {
+			if !device.HasPID || device.JID.IsEmpty() {
+				continue
+			}
+			if wanode.CleanJID(device.JID.String()) == ourBase {
+				continue
+			}
+			pids = append(pids, device.PID)
+		}
+	}
+	return pids
+}
+
+// ourDeviceJidLocked resolves this device's JID the same way the 1:1 SRTP setup
+// does. Caller holds m.mu.
+func (m *CallManager) ourDeviceJidLocked() string {
+	call := m.currentCall
+	if call == nil {
+		return ""
+	}
+	var participants []string
+	if call.RelayData != nil {
+		participants = call.RelayData.ParticipantJids
+	}
+	ourBase := wanode.CleanJID(m.ownCredJid())
+	return ensureDeviceJid(findOurDevice(participants, ourBase, m.ownCredJid()))
 }

@@ -85,6 +85,9 @@ type SctpRelayManager struct {
 	streamSelfSsrcs  []uint32
 	streamPeerSsrcs  []uint32
 
+	// group is nil on a 1:1 call; when set, the allocate carries the group shape.
+	group *GroupAllocateConfig
+
 	onConnected func(ip string, port int)
 
 	onReceive func(data []byte)
@@ -127,6 +130,51 @@ func (m *SctpRelayManager) SetStreamSsrcs(selfSsrcs, peerSsrcs []uint32) {
 	m.streamSelfSsrcs = append(m.streamSelfSsrcs[:0], selfSsrcs...)
 	m.streamPeerSsrcs = append(m.streamPeerSsrcs[:0], peerSsrcs...)
 	m.mu.Unlock()
+}
+
+// GroupAllocateConfig is what a group call adds to the allocate: the nine relay
+// stream SSRCs, the app-data SSRC, the connected remote participants, and the
+// hop-by-hop FEC pair.
+type GroupAllocateConfig struct {
+	Streams     [9]uint32
+	AppDataSSRC uint32
+	PIDs        []uint32
+	HBHFEC      [2]uint32
+}
+
+// SetGroupAllocate switches the allocate into group shape, and reports whether
+// the participant set actually changed. The caller resends on true: a
+// participant that joined without a resend never gets their media subscribed.
+func (m *SctpRelayManager) SetGroupAllocate(cfg GroupAllocateConfig) bool {
+	normalized := NormalizeParticipantPIDs(cfg.PIDs)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	changed := m.group == nil || !equalPIDs(m.group.PIDs, normalized)
+	cfg.PIDs = normalized
+	m.group = &cfg
+	return changed
+}
+
+func equalPIDs(a, b []uint32) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func (m *SctpRelayManager) groupConfig() *GroupAllocateConfig {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.group == nil {
+		return nil
+	}
+	cfg := *m.group
+	return &cfg
 }
 
 func (m *SctpRelayManager) SetOnConnected(fn func(ip string, port int)) { m.onConnected = fn }
@@ -366,6 +414,14 @@ func (m *SctpRelayManager) sendRegistration(conn *relayConnection) {
 	m.sendRaw(conn, BuildBindingRequestWithSubs(nil, nil, subs, false, false))
 
 	if len(info.RawToken) > 0 {
+		if cfg := m.groupConfig(); cfg != nil {
+			m.sendRaw(conn, BuildGroupAllocate(GroupAllocateParams{
+				RelayToken: info.RawToken, Streams: cfg.Streams,
+				AppDataSSRC: cfg.AppDataSSRC, PIDs: cfg.PIDs, HBHFEC: cfg.HBHFEC,
+				HMACKey: hmacKey, RelayIP: info.IP, RelayPort: info.Port,
+			}))
+			return
+		}
 		selfSsrcs, peerSsrcs := m.streamSsrcsSnapshot()
 		if len(selfSsrcs) == 0 {
 			selfSsrcs = []uint32{m.audioSsrc.Load()}

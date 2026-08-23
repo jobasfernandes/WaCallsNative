@@ -69,6 +69,9 @@ type CallManager struct {
 
 	// group stays nil on a 1:1 call.
 	group *GroupState
+	// groupSendKeySet guards against re-keying the send side on every roster
+	// update, which would reset the outbound SRTP contexts mid-call.
+	groupSendKeySet bool
 
 	extensions   []engine.Extension
 	extMu        sync.Mutex

@@ -53,10 +53,11 @@ func (fakeSock) ResolveLIDForPN(ctx context.Context, pn types.JID) types.JID {
 }
 
 type fakeRelay struct {
-	onData      func([]byte)
-	onConfigure func([]transport.RelayConfig)
-	onDrop      func()
-	noConn      bool
+	onData          func([]byte)
+	onConfigure     func([]transport.RelayConfig)
+	onDrop          func()
+	noConn          bool
+	onGroupAllocate func(transport.GroupAllocateConfig) bool
 }
 
 var _ RelayTransport = (*fakeRelay)(nil)
@@ -70,10 +71,16 @@ func (r *fakeRelay) HasConnection() bool               { return !r.noConn }
 func (r *fakeRelay) SetSsrc(uint32)                    {}
 func (r *fakeRelay) SetSubscriptionSsrc(uint32)        {}
 func (r *fakeRelay) SetStreamSsrcs([]uint32, []uint32) {}
-func (r *fakeRelay) SetOnConnected(func(string, int))  {}
-func (r *fakeRelay) SetOnReceive(func([]byte))         {}
-func (r *fakeRelay) SetOnUsableChange(func(int))       {}
-func (r *fakeRelay) ResendSubscriptions()              {}
+func (r *fakeRelay) SetGroupAllocate(cfg transport.GroupAllocateConfig) bool {
+	if r.onGroupAllocate != nil {
+		return r.onGroupAllocate(cfg)
+	}
+	return false
+}
+func (r *fakeRelay) SetOnConnected(func(string, int)) {}
+func (r *fakeRelay) SetOnReceive(func([]byte))        {}
+func (r *fakeRelay) SetOnUsableChange(func(int))      {}
+func (r *fakeRelay) ResendSubscriptions()             {}
 func (r *fakeRelay) ConfigureRelays(relays []transport.RelayConfig) {
 	if r.onConfigure != nil {
 		r.onConfigure(relays)
