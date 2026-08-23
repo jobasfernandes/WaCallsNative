@@ -16,11 +16,14 @@ import (
 // recordingSock captura o que sai e devolve uma epoch controlada.
 type recordingSock struct {
 	fakeSock
-	mu    sync.Mutex
-	sent  []waBinary.Node
-	epoch []byte
-	err   error
+	mu     sync.Mutex
+	sent   []waBinary.Node
+	epoch  []byte
+	err    error
+	ownLID types.JID
 }
+
+func (s *recordingSock) OwnLID() types.JID { return s.ownLID }
 
 func (s *recordingSock) SendNode(_ context.Context, node waBinary.Node) error {
 	s.mu.Lock()
