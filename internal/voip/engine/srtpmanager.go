@@ -14,6 +14,7 @@ type SrtpManager struct {
 	mu       sync.Mutex
 	sendKM   core.SrtpKeyingMaterial
 	recvKM   core.SrtpKeyingMaterial
+	recvKeys map[uint32]core.SrtpKeyingMaterial
 	sendAuth int
 	recvAuth int
 	send     map[uint32]*media.SrtpContext
@@ -26,11 +27,35 @@ func NewSrtpManager(sendKM, recvKM core.SrtpKeyingMaterial, sendAuth, recvAuth i
 	return &SrtpManager{
 		sendKM:   sendKM,
 		recvKM:   recvKM,
+		recvKeys: map[uint32]core.SrtpKeyingMaterial{},
 		sendAuth: sendAuth,
 		recvAuth: recvAuth,
 		send:     map[uint32]*media.SrtpContext{},
 		recv:     map[uint32]*media.SrtpContext{},
 		observer: core.NopObserver{},
+	}
+}
+
+// SetRecvKeyForSSRC registers the receive key of one sender. A call with more
+// than two parties has one key per participant device, so the single recvKM only
+// answers for the 1:1 case; anything not registered here keeps using it.
+//
+// Any context already built for that SSRC is dropped: a packet can arrive before
+// the roster that carries its key, and the context built with the wrong key would
+// otherwise keep failing forever, leaving that participant silent.
+func (m *SrtpManager) SetRecvKeyForSSRC(ssrc uint32, km core.SrtpKeyingMaterial) {
+	m.mu.Lock()
+	m.recvKeys[ssrc] = km
+	var released int64
+	if _, ok := m.recv[ssrc]; ok {
+		delete(m.recv, ssrc)
+		released = srtpContextBytes
+		m.mem -= released
+	}
+	obs := m.observer
+	m.mu.Unlock()
+	if released > 0 {
+		obs.ReleaseMem(released)
 	}
 }
 
@@ -72,7 +97,11 @@ func (m *SrtpManager) Unprotect(data []byte) (*media.RtpPacket, error) {
 	defer m.mu.Unlock()
 	ctx, ok := m.recv[ssrc]
 	if !ok {
-		c, err := media.NewSrtpContext(m.recvKM, m.recvAuth)
+		km, registered := m.recvKeys[ssrc]
+		if !registered {
+			km = m.recvKM
+		}
+		c, err := media.NewSrtpContext(km, m.recvAuth)
 		if err != nil {
 			return nil, err
 		}
@@ -91,6 +120,9 @@ func (m *SrtpManager) RekeyRecv(recvKM core.SrtpKeyingMaterial) {
 	obs := m.observer
 	m.recvKM = recvKM
 	m.recv = map[uint32]*media.SrtpContext{}
+	// A rekey replaces the whole receive side: per-participant keys derived from
+	// the previous epoch cannot outlive it.
+	m.recvKeys = map[uint32]core.SrtpKeyingMaterial{}
 	m.mu.Unlock()
 	if released > 0 {
 		obs.ReleaseMem(released)
