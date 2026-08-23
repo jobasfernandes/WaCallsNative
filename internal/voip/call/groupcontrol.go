@@ -315,11 +315,24 @@ func (m *CallManager) ourDeviceJidLocked() string {
 	if call == nil {
 		return ""
 	}
+	ourBase := wanode.CleanJID(m.ownCredJid())
+	// Numa chamada de grupo o roster e quem diz qual device somos. O relay 1:1 nao
+	// nos lista quando entramos por convite, e cair no JID base nos daria o device
+	// 0: cada SSRC e cada chave sairia de uma identidade que nao esta na chamada.
+	if m.group != nil && m.group.Roster != nil {
+		for _, participant := range m.group.Roster.Participants {
+			for _, device := range participant.Devices {
+				raw := device.JID.String()
+				if wanode.CleanJID(raw) == ourBase && strings.Contains(raw, ":") {
+					return ensureDeviceJid(raw)
+				}
+			}
+		}
+	}
 	var participants []string
 	if call.RelayData != nil {
 		participants = call.RelayData.ParticipantJids
 	}
-	ourBase := wanode.CleanJID(m.ownCredJid())
 	return ensureDeviceJid(findOurDevice(participants, ourBase, m.ownCredJid()))
 }
 

@@ -306,3 +306,38 @@ func TestGroupRosterRelayBecomesEndpoints(t *testing.T) {
 		t.Fatal("expected at least one relay config")
 	}
 }
+
+// O nosso device JID decide cada SSRC e cada chave que derivamos. Numa chamada de
+// grupo por convite o relay 1:1 nao nos lista, e o fallback devolve o JID base,
+// que vira o device :0. O roster e quem sabe qual device somos de verdade: usar o
+// device errado deriva SSRCs e chaves que ninguem do outro lado reconhece.
+func TestOurDeviceJidComesFromTheRoster(t *testing.T) {
+	sock := &encryptingSock{}
+	sock.ownLID = lidJID("999")
+	m := NewCallManager(sock, slog.Default())
+	m.currentCall = &CallInfo{CallID: "CALL1", PeerJid: "peer:0@lid"}
+	m.relay = &fakeRelay{}
+
+	// O roster nos lista no device 27, e nao ha RelayData nenhum.
+	self := types.JID{User: "999", Server: types.HiddenUserServer, Device: 27}
+	node := groupUpdateNode(25,
+		connectedDevice("111", 1),
+		waBinary.Node{
+			Tag:   "user",
+			Attrs: waBinary.Attrs{"jid": lidJID("999"), "state": "connected"},
+			Content: []waBinary.Node{{
+				Tag:   "device",
+				Attrs: waBinary.Attrs{"jid": self, "pid": "2"},
+			}},
+		},
+	)
+	node.GetChildren()[0].Attrs["rekey"] = "1"
+	m.HandleControl(context.Background(), controlNode(node))
+
+	m.mu.Lock()
+	got := m.ourDeviceJidLocked()
+	m.mu.Unlock()
+	if want := self.String(); got != want {
+		t.Errorf("our device JID = %q, want %q from the roster", got, want)
+	}
+}
