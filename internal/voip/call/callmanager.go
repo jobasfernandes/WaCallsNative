@@ -77,6 +77,7 @@ type CallManager struct {
 	extMu        sync.Mutex
 	rtpHandlers  map[uint8]func(*media.RtpPacket)
 	declaredSelf map[uint32]bool
+	seenInbound  map[uint64]bool
 	extAttached  bool
 
 	OnStateChange func(*CallInfo)

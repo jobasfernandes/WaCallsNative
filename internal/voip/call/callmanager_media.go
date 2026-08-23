@@ -236,6 +236,10 @@ func (m *CallManager) onRelayData(data []byte) {
 	skip := m.declaredSelf[ssrc]
 	handler := m.rtpHandlers[pt]
 	m.extMu.Unlock()
+	// Every inbound stream is announced once. Silence here is itself the finding:
+	// it separates "the relay forwards nothing" from "packets arrive and are
+	// dropped", which no other log distinguishes.
+	m.noteInboundStream(ssrc, pt, skip, srtp != nil, handler != nil)
 	if skip || srtp == nil || handler == nil {
 		return
 	}
@@ -262,7 +266,10 @@ func (m *CallManager) onRelayData(data []byte) {
 	// with a spoofed SSRC must never redirect the peer subscription.
 	if pt == core.PayloadTypeWhatsAppOpus {
 		m.mu.Lock()
-		if !m.actualPeerSet {
+		// A group call subscribes to every participant at once, and the roster is
+		// what says who they are. Latching onto the first stream that authenticates
+		// would drop every other participant's subscription.
+		if !m.actualPeerSet && m.group == nil {
 			m.actualPeerSet = true
 			if !containsSsrc(m.peerSsrcs, ssrc) {
 				m.peerSsrcs = []uint32{ssrc}
@@ -302,4 +309,35 @@ func (t *srtpDropTally) snapshotAndReset() map[string]int64 {
 	out := t.counts
 	t.counts = nil
 	return out
+}
+
+// noteInboundStream logs the first packet of every distinct inbound stream, with
+// whether this call can route it at all.
+func (m *CallManager) noteInboundStream(ssrc uint32, pt uint8, skip, hasSrtp, hasHandler bool) {
+	m.extMu.Lock()
+	if m.seenInbound == nil {
+		m.seenInbound = map[uint64]bool{}
+	}
+	stream := uint64(ssrc)<<8 | uint64(pt)
+	if m.seenInbound[stream] {
+		m.extMu.Unlock()
+		return
+	}
+	m.seenInbound[stream] = true
+	m.extMu.Unlock()
+
+	m.mu.Lock()
+	expected := containsSsrc(m.peerSsrcs, ssrc)
+	subscriptions := len(m.peerSsrcs)
+	callID := ""
+	if m.currentCall != nil {
+		callID = m.currentCall.CallID
+	}
+	m.mu.Unlock()
+	m.log.Info("inbound rtp stream seen",
+		"call_id", callID, "ssrc", ssrc, "payload_type", pt,
+		// expected=false means the SSRC we derived for this participant is not the
+		// one they actually send on, so no receive key was ever registered for it.
+		"expected", expected, "subscriptions", subscriptions,
+		"declared_self", skip, "has_srtp", hasSrtp, "has_handler", hasHandler)
 }
