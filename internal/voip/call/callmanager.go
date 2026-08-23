@@ -305,7 +305,22 @@ func (m *CallManager) EndCall(ctx context.Context, reason core.EndCallReason) er
 	if m.acceptedByJid != "" {
 		termDest = m.acceptedByJid
 	}
-	node := signaling.BuildTerminateStanza(wanode.MustJID(termDest), call.CallID, wanode.MustJID(call.CallCreator))
+	var node waBinary.Node
+	if m.group != nil {
+		// A group terminate goes to the call service, like the rest of the group
+		// signaling. Addressed to a participant it reads as ending the call with
+		// that participant, and the device that invited us leaves along with us.
+		groupNode, err := signaling.BuildGroupTerminate(
+			call.CallID, wanode.MustJID(call.CallCreator), signaling.GenerateCallStanzaID())
+		if err != nil {
+			m.mu.Unlock()
+			return err
+		}
+		node = groupNode
+	} else {
+		node = signaling.BuildTerminateStanza(
+			wanode.MustJID(termDest), call.CallID, wanode.MustJID(call.CallCreator))
+	}
 	ended := call
 	m.emitState()
 	m.mu.Unlock()

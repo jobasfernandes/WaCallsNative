@@ -222,3 +222,18 @@ func buildGroupUsers(participants []GroupCallParticipant) ([]waBinary.Node, erro
 	}
 	return users, nil
 }
+
+// BuildGroupTerminate ends this device's participation in a group call. Unlike
+// the 1:1 terminate it is addressed to the call service rather than to a
+// participant: sending it straight to the peer JID reads as ending the call with
+// that participant, and the device that invited us leaves along with us.
+func BuildGroupTerminate(callID string, callCreator types.JID, requestID string) (waBinary.Node, error) {
+	if callID == "" || callCreator.IsEmpty() || requestID == "" {
+		return waBinary.Node{}, fmt.Errorf("signaling: build group terminate: incomplete identity")
+	}
+	action := waBinary.Node{
+		Tag:   "terminate",
+		Attrs: waBinary.Attrs{"call-id": callID, "call-creator": callCreator},
+	}
+	return callWrapWithID(callServiceJID(callID), requestID, action), nil
+}

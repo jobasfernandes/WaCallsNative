@@ -445,3 +445,54 @@ func TestGroupCallBuildsItsSendingMediaSession(t *testing.T) {
 			relay.sentSsrc(), want)
 	}
 }
+
+// Sair de uma chamada de grupo tem de tirar so este device. O terminate 1:1 vai
+// endereçado ao peer, que numa chamada de grupo e quem nos convidou, e o
+// servidor o tira da chamada junto conosco.
+func TestLeavingAGroupCallDoesNotEndItForTheInviter(t *testing.T) {
+	sock := &recordingSock{}
+	sock.ownLID = lidJID("999")
+	m := NewCallManager(sock, slog.Default())
+	inviter := types.NewJID("5511999990000", types.DefaultUserServer)
+	call := NewIncomingCall("GCALL1", inviter.String(), inviter.String(), "", core.CallMediaTypeAudio)
+	m.currentCall = call
+	m.group = &GroupState{TransactionID: 1}
+	m.relay = &fakeRelay{}
+
+	if err := m.EndCall(context.Background(), core.EndCallReasonUserEnded); err != nil {
+		t.Fatalf("EndCall: %v", err)
+	}
+
+	// O terminate sai numa goroutine.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		sock.mu.Lock()
+		n := len(sock.sent)
+		sock.mu.Unlock()
+		if n > 0 {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	sock.mu.Lock()
+	defer sock.mu.Unlock()
+	var found bool
+	for _, n := range sock.sent {
+		for _, child := range n.GetChildren() {
+			if child.Tag != "terminate" {
+				continue
+			}
+			found = true
+			to, _ := n.Attrs["to"].(types.JID)
+			if to.Server != "call" {
+				t.Errorf("terminate addressed to %s, want the call service", to)
+			}
+			if to.User == inviter.User {
+				t.Error("a group terminate must not be addressed to the inviter")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("leaving must still send a terminate")
+	}
+}

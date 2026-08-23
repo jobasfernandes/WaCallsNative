@@ -440,11 +440,19 @@ func (m *SctpRelayManager) sendRegistration(conn *relayConnection) {
 			if len(cfg.Key) > 0 {
 				key = cfg.Key
 			}
-			m.sendRaw(conn, BuildGroupAllocate(GroupAllocateParams{
+			allocate := BuildGroupAllocate(GroupAllocateParams{
 				RelayToken: token, Streams: cfg.Streams,
 				AppDataSSRC: cfg.AppDataSSRC, PIDs: cfg.PIDs, HBHFEC: cfg.HBHFEC,
 				HMACKey: key, RelayIP: info.IP, RelayPort: info.Port,
-			}))
+			})
+			m.sendRaw(conn, allocate)
+			// Whether the allocate leaves, for which relay and asking for which
+			// participants, is the difference between "the relay refuses us" and
+			// "we never asked", which nothing else distinguishes.
+			m.log.Info("group allocate sent",
+				"relay", info.Name, "relay_ip", info.IP,
+				"pids", cfg.PIDs, "bytes", len(allocate),
+				"group_token", len(cfg.tokenFor(info.Name)) > 0)
 			return
 		}
 		selfSsrcs, peerSsrcs := m.streamSsrcsSnapshot()
