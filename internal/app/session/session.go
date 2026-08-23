@@ -22,6 +22,7 @@ import (
 
 	"github.com/mdp/qrterminal/v3"
 	"go.mau.fi/whatsmeow"
+	waBinary "go.mau.fi/whatsmeow/binary"
 	"go.mau.fi/whatsmeow/types"
 	waevents "go.mau.fi/whatsmeow/types/events"
 )
@@ -203,6 +204,13 @@ func (s *Session) handleEvent(rawEvt any) {
 	case *waevents.UnknownCallEvent:
 		if _, ok := evt.Node.GetOptionalChildByTag("mute_v2"); ok {
 			s.calls.HandleMute(evt.Node)
+			return
+		}
+		// Group control actions arrive here too: whatsmeow types only the direct
+		// call verbs, so group_update, enc_rekey, waiting_room_update,
+		// user_action and screen_share all land as unknown call events.
+		if isGroupControlNode(evt.Node) {
+			s.calls.HandleControl(ctx, evt.Node)
 		}
 	}
 }
@@ -380,4 +388,23 @@ func mapStatus(state core.CallState) events.CallStatus {
 	default:
 		return events.StatusRinging
 	}
+}
+
+// groupControlTags are the five call-control actions a group call uses. Every one
+// of them needs a typed ack, so they are routed even when this build does not act
+// on all of them yet.
+var groupControlTags = []string{
+	"group_update", "enc_rekey", "waiting_room_update", "user_action", "screen_share",
+}
+
+func isGroupControlNode(node *waBinary.Node) bool {
+	if node == nil {
+		return false
+	}
+	for _, tag := range groupControlTags {
+		if _, ok := node.GetOptionalChildByTag(tag); ok {
+			return true
+		}
+	}
+	return false
 }

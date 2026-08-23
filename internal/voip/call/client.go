@@ -205,6 +205,17 @@ func (c *Client) SetMute(ctx context.Context, callID string, muted bool) error {
 	return &CallError{"no call with id " + callID}
 }
 
+// HandleControl routes one raw group control node to the call it belongs to.
+func (c *Client) HandleControl(ctx context.Context, node *waBinary.Node) {
+	info := signaling.ExtractNodeInfo(node)
+	if info == nil {
+		return
+	}
+	if cm, ok := c.get(info.CallID); ok {
+		cm.HandleControl(ctx, node)
+	}
+}
+
 func (c *Client) SendReaction(callID, emoji string) error {
 	if cm, ok := c.get(callID); ok {
 		return cm.SendReaction(emoji)
