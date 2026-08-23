@@ -281,6 +281,7 @@ func (m *CallManager) applyGroupAllocateLocked() {
 		PIDs:        m.remotePIDsLocked(),
 		Tokens:      m.group.RelayTokens,
 		Key:         m.group.RelayKey,
+		RelayName:   m.groupMediaRelayNameLocked(),
 		HBHFEC: [2]uint32{
 			media.GenerateSecureSsrc(call.CallID, ourDeviceJid, transport.HBHFECTXSlotWord),
 			media.GenerateSecureSsrc(call.CallID, ourDeviceJid, transport.HBHFECRXSlotWord),
@@ -590,7 +591,8 @@ func (m *CallManager) connectGroupRelayLocked(update *signaling.GroupCallUpdate)
 	if m.relay.HasConnection() {
 		m.log.Info("group relay credentials applied to the open connection",
 			"call_id", call.CallID, "relays", len(tokens),
-			"self_pid", update.Relay.SelfPID)
+			"self_pid", update.Relay.SelfPID,
+			"media_relay", m.groupMediaRelayNameLocked())
 		return
 	}
 	relayData := groupRelayToCore(update.Relay)
@@ -603,7 +605,11 @@ func (m *CallManager) connectGroupRelayLocked(update *signaling.GroupCallUpdate)
 	call.RelayData = relayData
 	m.log.Info("group relay endpoints applied",
 		"call_id", call.CallID, "endpoints", len(relayData.Endpoints),
-		"self_pid", update.Relay.SelfPID)
+		"self_pid", update.Relay.SelfPID,
+		// Which single relay the allocate goes to, and whether the roster marks one
+		// as FNA, is what decides where the participants' media is expected.
+		"media_relay", selectedRelayName(relayData.Endpoints, call),
+		"fna", countFNA(relayData.Endpoints))
 	endpoints := relayData.Endpoints
 	go m.connectRelays(endpoints)
 }
@@ -740,4 +746,65 @@ func equalSsrcs(a, b []uint32) bool {
 		}
 	}
 	return true
+}
+
+// selectGroupMediaRelay picks the single relay the group allocate is sent to.
+// Allocating on every open relay makes each allocate supersede the last, so the
+// participants publish through one relay while we listen on another. An inbound
+// call takes the FNA endpoint, which is the one that carries the peers' media.
+func selectGroupMediaRelay(endpoints []core.RelayEndpoint, inbound bool) *core.RelayEndpoint {
+	if inbound {
+		for i := range endpoints {
+			if endpoints[i].IsFNA {
+				return &endpoints[i]
+			}
+		}
+	}
+	for i := range endpoints {
+		if !endpoints[i].IsFNA && endpoints[i].AuthTokenID != "" {
+			return &endpoints[i]
+		}
+	}
+	for i := range endpoints {
+		if !endpoints[i].IsFNA {
+			return &endpoints[i]
+		}
+	}
+	if len(endpoints) > 0 {
+		return &endpoints[0]
+	}
+	return nil
+}
+
+// groupMediaRelayNameLocked names the one relay the group allocate belongs on.
+//
+// Caller holds m.mu.
+func (m *CallManager) groupMediaRelayNameLocked() string {
+	call := m.currentCall
+	if call == nil || call.RelayData == nil {
+		return ""
+	}
+	chosen := selectGroupMediaRelay(call.RelayData.Endpoints, call.Direction == core.CallDirectionIncoming)
+	if chosen == nil {
+		return ""
+	}
+	return chosen.RelayName
+}
+
+func countFNA(endpoints []core.RelayEndpoint) int {
+	n := 0
+	for _, ep := range endpoints {
+		if ep.IsFNA {
+			n++
+		}
+	}
+	return n
+}
+
+func selectedRelayName(endpoints []core.RelayEndpoint, call *CallInfo) string {
+	chosen := selectGroupMediaRelay(endpoints, call.Direction == core.CallDirectionIncoming)
+	if chosen == nil {
+		return ""
+	}
+	return chosen.RelayName
 }

@@ -496,3 +496,27 @@ func TestLeavingAGroupCallDoesNotEndItForTheInviter(t *testing.T) {
 		t.Fatal("leaving must still send a terminate")
 	}
 }
+
+// Alocar em todos os relays abertos faz cada allocate substituir o anterior, e
+// acabamos ouvindo num relay por onde ninguem publica. Numa chamada recebida o
+// relay de midia e o FNA.
+func TestGroupMediaRelayIsASingleEndpoint(t *testing.T) {
+	endpoints := []core.RelayEndpoint{
+		{IP: "1.1.1.1", RelayName: "plain", AuthTokenID: "0"},
+		{IP: "2.2.2.2", RelayName: "fna", IsFNA: true},
+	}
+	if got := selectGroupMediaRelay(endpoints, true); got == nil || got.RelayName != "fna" {
+		t.Errorf("inbound call picked %v, want the FNA endpoint", got)
+	}
+	// Sem FNA, o endpoint com auth token vem primeiro.
+	plain := []core.RelayEndpoint{
+		{IP: "1.1.1.1", RelayName: "bare"},
+		{IP: "2.2.2.2", RelayName: "authed", AuthTokenID: "1"},
+	}
+	if got := selectGroupMediaRelay(plain, true); got == nil || got.RelayName != "authed" {
+		t.Errorf("picked %v, want the endpoint carrying an auth token", got)
+	}
+	if selectGroupMediaRelay(nil, true) != nil {
+		t.Error("no endpoints must yield no relay")
+	}
+}

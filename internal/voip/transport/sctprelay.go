@@ -147,6 +147,10 @@ type GroupAllocateConfig struct {
 	// because that is what identifies the same relay across both blocks.
 	Tokens map[string][]byte
 	Key    []byte
+	// RelayName is the one relay the allocate belongs on. Sending it on every
+	// open relay makes each allocate supersede the last, leaving us listening
+	// where nobody publishes.
+	RelayName string
 }
 
 // tokenFor picks the group token that belongs to an open relay. Without a match
@@ -168,7 +172,8 @@ func (m *SctpRelayManager) SetGroupAllocate(cfg GroupAllocateConfig) bool {
 	defer m.mu.Unlock()
 	// A reissued token has to reach the relay too, not just a changed roster.
 	changed := m.group == nil || !equalPIDs(m.group.PIDs, normalized) ||
-		!equalTokens(m.group.Tokens, cfg.Tokens) || !bytes.Equal(m.group.Key, cfg.Key)
+		!equalTokens(m.group.Tokens, cfg.Tokens) || !bytes.Equal(m.group.Key, cfg.Key) ||
+		m.group.RelayName != cfg.RelayName
 	cfg.PIDs = normalized
 	m.group = &cfg
 	return changed
@@ -437,6 +442,9 @@ func (m *SctpRelayManager) sendRegistration(conn *relayConnection) {
 
 	if len(info.RawToken) > 0 {
 		if cfg := m.groupConfig(); cfg != nil {
+			if cfg.RelayName != "" && info.Name != cfg.RelayName {
+				return
+			}
 			token, key := info.RawToken, hmacKey
 			if groupToken := cfg.tokenFor(info.Name); len(groupToken) > 0 {
 				token = groupToken
