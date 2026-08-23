@@ -165,13 +165,6 @@ func BuildPreacceptStanza(peerJid types.JID, callID string, callCreator types.JI
 	}
 }
 
-func CreateCallAck(nodeID string, peerJid types.JID, typ string) waBinary.Node {
-	return waBinary.Node{
-		Tag:   "ack",
-		Attrs: waBinary.Attrs{"id": nodeID, "to": peerJid, "class": "call", "type": typ},
-	}
-}
-
 type RelayLatencyEntry struct {
 	RelayName    string
 	Latency      int
@@ -258,9 +251,16 @@ func BuildAcceptReceiptStanza(peerDeviceJid types.JID, acceptMsgID, callID strin
 }
 
 func callWrap(to types.JID, inner waBinary.Node) waBinary.Node {
+	return callWrapWithID(to, GenerateCallStanzaID(), inner)
+}
+
+// callWrapWithID wraps with a caller-supplied stanza id. Group control actions and
+// the three call-link verbs are request/response correlated by this id, so it
+// cannot be generated inside.
+func callWrapWithID(to types.JID, id string, inner waBinary.Node) waBinary.Node {
 	return waBinary.Node{
 		Tag:     "call",
-		Attrs:   waBinary.Attrs{"to": to, "id": GenerateCallStanzaID()},
+		Attrs:   waBinary.Attrs{"to": to, "id": id},
 		Content: []waBinary.Node{inner},
 	}
 }
