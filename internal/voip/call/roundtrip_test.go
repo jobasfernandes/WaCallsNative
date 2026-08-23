@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"log/slog"
 	"math"
+	"sync"
 	"testing"
 
 	"wacalls/internal/voip/codec/mlow"
@@ -58,6 +59,15 @@ type fakeRelay struct {
 	onDrop          func()
 	noConn          bool
 	onGroupAllocate func(transport.GroupAllocateConfig) bool
+
+	groupMu   sync.Mutex
+	lastGroup *transport.GroupAllocateConfig
+}
+
+func (r *fakeRelay) groupConfig() *transport.GroupAllocateConfig {
+	r.groupMu.Lock()
+	defer r.groupMu.Unlock()
+	return r.lastGroup
 }
 
 var _ RelayTransport = (*fakeRelay)(nil)
@@ -72,6 +82,9 @@ func (r *fakeRelay) SetSsrc(uint32)                    {}
 func (r *fakeRelay) SetSubscriptionSsrc(uint32)        {}
 func (r *fakeRelay) SetStreamSsrcs([]uint32, []uint32) {}
 func (r *fakeRelay) SetGroupAllocate(cfg transport.GroupAllocateConfig) bool {
+	r.groupMu.Lock()
+	r.lastGroup = &cfg
+	r.groupMu.Unlock()
 	if r.onGroupAllocate != nil {
 		return r.onGroupAllocate(cfg)
 	}

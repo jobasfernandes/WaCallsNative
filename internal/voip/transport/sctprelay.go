@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"bytes"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -140,6 +141,21 @@ type GroupAllocateConfig struct {
 	AppDataSSRC uint32
 	PIDs        []uint32
 	HBHFEC      [2]uint32
+	// The group roster reissues a token per relay and one shared key. They
+	// replace the 1:1 credentials in the allocate, addressed by relay name
+	// because that is what identifies the same relay across both blocks.
+	Tokens map[string][]byte
+	Key    []byte
+}
+
+// tokenFor picks the group token that belongs to an open relay. Without a match
+// the caller keeps its 1:1 token, which the server accepts until the group
+// roster reissues one.
+func (c *GroupAllocateConfig) tokenFor(relayName string) []byte {
+	if c == nil || relayName == "" {
+		return nil
+	}
+	return c.Tokens[relayName]
 }
 
 // SetGroupAllocate switches the allocate into group shape, and reports whether
@@ -149,7 +165,9 @@ func (m *SctpRelayManager) SetGroupAllocate(cfg GroupAllocateConfig) bool {
 	normalized := NormalizeParticipantPIDs(cfg.PIDs)
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	changed := m.group == nil || !equalPIDs(m.group.PIDs, normalized)
+	// A reissued token has to reach the relay too, not just a changed roster.
+	changed := m.group == nil || !equalPIDs(m.group.PIDs, normalized) ||
+		!equalTokens(m.group.Tokens, cfg.Tokens) || !bytes.Equal(m.group.Key, cfg.Key)
 	cfg.PIDs = normalized
 	m.group = &cfg
 	return changed
@@ -415,10 +433,17 @@ func (m *SctpRelayManager) sendRegistration(conn *relayConnection) {
 
 	if len(info.RawToken) > 0 {
 		if cfg := m.groupConfig(); cfg != nil {
+			token, key := info.RawToken, hmacKey
+			if groupToken := cfg.tokenFor(info.Name); len(groupToken) > 0 {
+				token = groupToken
+			}
+			if len(cfg.Key) > 0 {
+				key = cfg.Key
+			}
 			m.sendRaw(conn, BuildGroupAllocate(GroupAllocateParams{
-				RelayToken: info.RawToken, Streams: cfg.Streams,
+				RelayToken: token, Streams: cfg.Streams,
 				AppDataSSRC: cfg.AppDataSSRC, PIDs: cfg.PIDs, HBHFEC: cfg.HBHFEC,
-				HMACKey: hmacKey, RelayIP: info.IP, RelayPort: info.Port,
+				HMACKey: key, RelayIP: info.IP, RelayPort: info.Port,
 			}))
 			return
 		}
@@ -664,4 +689,16 @@ func (m *SctpRelayManager) Cleanup() {
 	for _, c := range conns {
 		m.teardown(c)
 	}
+}
+
+func equalTokens(a, b map[string][]byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for name, token := range a {
+		if !bytes.Equal(token, b[name]) {
+			return false
+		}
+	}
+	return true
 }

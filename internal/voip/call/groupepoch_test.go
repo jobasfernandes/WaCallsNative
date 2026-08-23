@@ -2,6 +2,7 @@ package call
 
 import (
 	"context"
+	"encoding/base64"
 	"log/slog"
 	"strconv"
 	"sync"
@@ -246,46 +247,23 @@ func TestGroupCallBuildsItsOwnSrtpFromTheEpoch(t *testing.T) {
 	}
 }
 
-// O <relay> do roster de grupo e por onde a midia passa. Sem converte-lo em
-// endpoints o transporte nunca conecta, e a chamada fica sem caminho de audio.
-func TestGroupRosterRelayBecomesEndpoints(t *testing.T) {
+// Entrar por convite numa chamada de grupo nao tem conexao anterior para
+// reaproveitar: os endpoints do roster sao o unico caminho que a midia tera.
+func TestGroupRosterRelayDialsWhenNothingIsConnected(t *testing.T) {
 	sock := &encryptingSock{}
 	sock.ownLID = lidJID("999")
 	m := NewCallManager(sock, slog.Default())
 	m.currentCall = &CallInfo{CallID: "CALL1", PeerJid: "peer:0@lid"}
 	var mu sync.Mutex
 	var configured [][]transport.RelayConfig
-	m.relay = &fakeRelay{onConfigure: func(r []transport.RelayConfig) {
+	m.relay = &fakeRelay{noConn: true, onConfigure: func(r []transport.RelayConfig) {
 		mu.Lock()
 		configured = append(configured, r)
 		mu.Unlock()
 	}}
 
-	// O <relay> e irmao do <group_info>, nao filho dele.
-	node := rosterWithRekey(25)
-	children := node.GetChildren()
-	children = append(children, waBinary.Node{
-		Tag: "relay",
-		Attrs: waBinary.Attrs{
-			"uuid": "R1", "participant_uuid": "P1", "self_pid": "2", "transaction-id": "25",
-		},
-		Content: []waBinary.Node{
-			{Tag: "key", Content: []byte("relaykey")},
-			{Tag: "hbh_key", Content: []byte("hbhkey")},
-			{Tag: "token", Attrs: waBinary.Attrs{"id": "0"}, Content: []byte("tok0")},
-			{
-				Tag: "te2",
-				Attrs: waBinary.Attrs{
-					"relay_name": "sao1", "relay_id": "5", "token_id": "0", "c2r_rtt": "23",
-				},
-				Content: []byte{192, 168, 1, 10, 0x0d, 0x98},
-			},
-		},
-	})
-	node.Content = children
-	m.HandleControl(context.Background(), controlNode(node))
+	m.HandleControl(context.Background(), controlNode(rosterWithGroupRelay(25)))
 
-	// A conexao roda fora do handler para nao segurar o loop de eventos.
 	deadline := time.Now().Add(2 * time.Second)
 	for {
 		mu.Lock()
@@ -299,12 +277,95 @@ func TestGroupRosterRelayBecomesEndpoints(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	if len(configured) == 0 {
-		t.Fatal("the group relay must be turned into transport endpoints")
+		t.Fatal("with nothing connected the roster relay must be dialed")
 	}
-	last := configured[len(configured)-1]
-	if len(last) == 0 {
-		t.Fatal("expected at least one relay config")
+	// O ICE le o token como texto. Mandar os bytes crus deixa a conexao em
+	// checking ate estourar o timeout, e foi o que tirou este device da chamada.
+	ep := configured[len(configured)-1][0]
+	if want := base64.StdEncoding.EncodeToString([]byte("tok0")); ep.Token != want {
+		t.Errorf("ICE token = %q, want the base64 form %q", ep.Token, want)
 	}
+	if ep.Key != "relaykey" {
+		t.Errorf("ICE key = %q, want the relay key verbatim", ep.Key)
+	}
+}
+
+// Uma chamada que virou grupo no lugar ja tem a conexao que carrega a midia.
+// Discar de novo a abandona, e as novas ficam em checking ate o timeout.
+func TestGroupRosterRelayDoesNotRedialOverALiveConnection(t *testing.T) {
+	sock := &encryptingSock{}
+	sock.ownLID = lidJID("999")
+	m := NewCallManager(sock, slog.Default())
+	m.currentCall = &CallInfo{CallID: "CALL1", PeerJid: "peer:0@lid"}
+	var mu sync.Mutex
+	dialed := 0
+	m.relay = &fakeRelay{onConfigure: func([]transport.RelayConfig) {
+		mu.Lock()
+		dialed++
+		mu.Unlock()
+	}}
+
+	m.HandleControl(context.Background(), controlNode(rosterWithGroupRelay(25)))
+
+	time.Sleep(200 * time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	if dialed != 0 {
+		t.Fatalf("redialed %d times over a live connection, want none", dialed)
+	}
+}
+
+// O allocate de grupo tem de sair com o token que o roster trouxe para aquele
+// relay, e nao com o token do fluxo 1:1. Com o token errado o servidor ignora o
+// allocate e este device nunca passa a receber midia do grupo.
+func TestGroupRelayTokenReachesTheAllocate(t *testing.T) {
+	sock := &encryptingSock{}
+	sock.ownLID = lidJID("999")
+	m := NewCallManager(sock, slog.Default())
+	m.currentCall = &CallInfo{CallID: "CALL1", PeerJid: "peer:0@lid"}
+	relay := &fakeRelay{}
+	m.relay = relay
+
+	m.HandleControl(context.Background(), controlNode(rosterWithGroupRelay(25)))
+
+	cfg := relay.groupConfig()
+	if cfg == nil {
+		t.Fatal("the roster must configure the group allocate")
+	}
+	// Bytes crus aqui: o allocate STUN carrega o token, nao o texto do ICE.
+	if got := string(cfg.Tokens["sao1"]); got != "tok0" {
+		t.Errorf("group token for sao1 = %q, want the token the roster carried", got)
+	}
+	if got := string(cfg.Key); got != "relaykey" {
+		t.Errorf("group relay key = %q, want the key the roster carried", got)
+	}
+}
+
+// rosterWithGroupRelay monta um roster que pede rekey e carrega o bloco <relay>
+// do grupo, irmao do <group_info>.
+func rosterWithGroupRelay(transactionID uint32) waBinary.Node {
+	node := rosterWithRekey(transactionID)
+	children := node.GetChildren()
+	children = append(children, waBinary.Node{
+		Tag: "relay",
+		Attrs: waBinary.Attrs{
+			"uuid": "R1", "participant_uuid": "P1", "self_pid": "2",
+			"transaction-id": strconv.FormatUint(uint64(transactionID), 10),
+		},
+		Content: []waBinary.Node{
+			{Tag: "key", Content: []byte("relaykey")},
+			{Tag: "token", Attrs: waBinary.Attrs{"id": "0"}, Content: []byte("tok0")},
+			{
+				Tag: "te2",
+				Attrs: waBinary.Attrs{
+					"relay_name": "sao1", "relay_id": "5", "token_id": "0", "c2r_rtt": "23",
+				},
+				Content: []byte{192, 168, 1, 10, 0x0d, 0x98},
+			},
+		},
+	})
+	node.Content = children
+	return node
 }
 
 // O nosso device JID decide cada SSRC e cada chave que derivamos. Numa chamada de

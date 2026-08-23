@@ -3,6 +3,7 @@ package call
 import (
 	"context"
 	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"strings"
 
@@ -30,6 +31,10 @@ type GroupState struct {
 	// epochTransactionID is the roster transaction the current epoch answers,
 	// so a resent roster does not produce a second, diverging key.
 	epochTransactionID uint32
+	// RelayTokens and RelayKey are the credentials the roster reissues for this
+	// call's relays, keyed by relay name.
+	RelayTokens map[string][]byte
+	RelayKey    []byte
 }
 
 // GroupState returns a snapshot of the group state, or nil on a 1:1 call.
@@ -273,6 +278,8 @@ func (m *CallManager) applyGroupAllocateLocked() {
 		Streams:     streams,
 		AppDataSSRC: appData,
 		PIDs:        m.remotePIDsLocked(),
+		Tokens:      m.group.RelayTokens,
+		Key:         m.group.RelayKey,
 		HBHFEC: [2]uint32{
 			media.GenerateSecureSsrc(call.CallID, ourDeviceJid, transport.HBHFECTXSlotWord),
 			media.GenerateSecureSsrc(call.CallID, ourDeviceJid, transport.HBHFECRXSlotWord),
@@ -564,12 +571,31 @@ func (m *CallManager) connectGroupRelayLocked(update *signaling.GroupCallUpdate)
 	if call == nil {
 		return
 	}
+	tokens := make(map[string][]byte)
+	for _, endpoint := range update.Relay.Endpoints {
+		if endpoint.RelayName == "" {
+			continue
+		}
+		if token := groupTokenAt(update.Relay.Tokens, endpoint.TokenID); len(token) > 0 {
+			tokens[endpoint.RelayName] = token
+		}
+	}
+	m.group.RelayTokens = tokens
+	m.group.RelayKey = update.Relay.Key
+
+	// A call upgraded in place from 1:1 already has the connection that carries
+	// media, and redialing would abandon it while the new connections sit in ICE
+	// checking until they time out.
+	if m.relay.HasConnection() {
+		m.log.Info("group relay credentials applied to the open connection",
+			"call_id", call.CallID, "relays", len(tokens),
+			"self_pid", update.Relay.SelfPID)
+		return
+	}
 	relayData := groupRelayToCore(update.Relay)
 	if len(relayData.Endpoints) == 0 {
 		return
 	}
-	// Only reconnect when the endpoint set actually changed: the roster is resent
-	// often, and redialing on every snapshot would tear down live media.
 	if call.RelayData != nil && sameRelayEndpoints(call.RelayData.Endpoints, relayData.Endpoints) {
 		return
 	}
@@ -600,14 +626,17 @@ func groupRelayToCore(relay *signaling.GroupCallRelay) *core.RelayData {
 			Key: string(relay.Key), IsFNA: endpoint.IsFNA,
 			AddressBytes: endpoint.Address,
 		}
-		// Tokens are addressed by index from the endpoint, not by position.
-		if idx := int(endpoint.TokenID); idx < len(relay.Tokens) && relay.Tokens[idx] != nil {
-			converted.RawToken = relay.Tokens[idx]
-			converted.Token = string(relay.Tokens[idx])
+		// The ICE handshake reads the token as text, so it travels base64-encoded
+		// exactly as the 1:1 relay ACK encodes it. The raw bytes stay for the STUN
+		// allocate: feeding them to ICE leaves the connection in checking until it
+		// times out.
+		if token := groupTokenAt(relay.Tokens, endpoint.TokenID); len(token) > 0 {
+			converted.RawToken = token
+			converted.Token = base64.StdEncoding.EncodeToString(token)
 		}
-		if idx := int(endpoint.AuthTokenID); idx < len(relay.AuthTokens) && relay.AuthTokens[idx] != nil {
-			converted.RawAuthToken = relay.AuthTokens[idx]
-			converted.AuthToken = string(relay.AuthTokens[idx])
+		if token := groupTokenAt(relay.AuthTokens, endpoint.AuthTokenID); len(token) > 0 {
+			converted.RawAuthToken = token
+			converted.AuthToken = base64.StdEncoding.EncodeToString(token)
 		}
 		if endpoint.RTT != 0 {
 			rtt := int(endpoint.RTT)
@@ -628,4 +657,12 @@ func sameRelayEndpoints(a, b []core.RelayEndpoint) bool {
 		}
 	}
 	return true
+}
+
+// groupTokenAt reads a token the endpoint addresses by index.
+func groupTokenAt(tokens [][]byte, id uint32) []byte {
+	if int(id) >= len(tokens) {
+		return nil
+	}
+	return tokens[id]
 }
