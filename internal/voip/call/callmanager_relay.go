@@ -336,6 +336,7 @@ func (m *CallManager) cleanupMedia() {
 	m.rtpHandlers = map[uint8]func(*media.RtpPacket){}
 	m.declaredSelf = map[uint32]bool{}
 	m.seenInbound = map[uint64]bool{}
+	m.seenStun = map[string]bool{}
 	m.extMu.Unlock()
 
 	for _, e := range m.extensions {

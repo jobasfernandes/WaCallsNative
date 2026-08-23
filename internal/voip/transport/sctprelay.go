@@ -60,17 +60,18 @@ type RelayConfig struct {
 }
 
 type relayConnection struct {
-	state        atomic.Int32
-	degraded     atomic.Bool
-	pc           *webrtc.PeerConnection
-	channel      *webrtc.DataChannel
-	id           string
-	info         RelayConfig
-	localUfrag   string
-	keepalive    *time.Ticker
-	stopCh       chan struct{}
-	mem          int64
-	teardownOnce sync.Once
+	state         atomic.Int32
+	degraded      atomic.Bool
+	pc            *webrtc.PeerConnection
+	channel       *webrtc.DataChannel
+	id            string
+	info          RelayConfig
+	localUfrag    string
+	keepalive     *time.Ticker
+	stopCh        chan struct{}
+	mem           int64
+	teardownOnce  sync.Once
+	probeAnswered bool
 }
 
 func (c *relayConnection) getState() relayConnState  { return relayConnState(c.state.Load()) }
@@ -320,6 +321,9 @@ func (m *SctpRelayManager) connectToRelay(info RelayConfig) {
 	})
 	channel.OnClose(func() { m.closeConnection(id) })
 	channel.OnMessage(func(msg webrtc.DataChannelMessage) {
+		if m.answerRelayProbe(conn, msg.Data) {
+			return
+		}
 		if m.onReceive != nil {
 			m.onReceive(msg.Data)
 		}
@@ -707,6 +711,30 @@ func equalTokens(a, b map[string][]byte) bool {
 		if !bytes.Equal(token, b[name]) {
 			return false
 		}
+	}
+	return true
+}
+
+// answerRelayProbe replies to the binding request the relay uses to check the
+// path before forwarding media. It must be answered on the connection it came
+// in on, and signed with that relay's key, so it is handled here rather than in
+// the call layer, which does not know which connection carried the packet.
+func (m *SctpRelayManager) answerRelayProbe(conn *relayConnection, data []byte) bool {
+	key := []byte(conn.info.Key)
+	if cfg := m.groupConfig(); cfg != nil && len(cfg.Key) > 0 {
+		key = cfg.Key
+	}
+	response, ok := BuildBindingSuccess(data, key)
+	if !ok {
+		return false
+	}
+	m.sendRaw(conn, response)
+	m.mu.Lock()
+	first := !conn.probeAnswered
+	conn.probeAnswered = true
+	m.mu.Unlock()
+	if first {
+		m.log.Info("relay path probe answered", "id", conn.id)
 	}
 	return true
 }

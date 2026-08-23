@@ -78,6 +78,7 @@ type CallManager struct {
 	rtpHandlers  map[uint8]func(*media.RtpPacket)
 	declaredSelf map[uint32]bool
 	seenInbound  map[uint64]bool
+	seenStun     map[string]bool
 	extAttached  bool
 
 	OnStateChange func(*CallInfo)

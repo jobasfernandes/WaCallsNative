@@ -15,6 +15,7 @@ const (
 	stunMagicCookie     = 0x2112a442
 	stunFingerprintXor  = 0x5354554e
 	stunBindingRequest  = 0x0001
+	stunBindingSuccess  = 0x0101
 	stunAllocateRequest = 0x0003
 	whatsappPing        = 0x0801
 
@@ -428,4 +429,20 @@ func BuildGroupAllocate(p GroupAllocateParams) []byte {
 			encodeXorRelayedAddress(p.RelayIP, p.RelayPort)))
 	}
 	return buildStunMessage(stunAllocateRequest, concat(parts...), generateTransactionID(), p.HMACKey, false)
+}
+
+// BuildBindingSuccess answers a binding request the relay sends us. The relay
+// probes the path before it forwards media, and an unanswered probe leaves the
+// return path shut: we keep publishing fine and receive nothing.
+func BuildBindingSuccess(request, integrityKey []byte) ([]byte, bool) {
+	if len(request) < 20 || len(integrityKey) == 0 {
+		return nil, false
+	}
+	if binary.BigEndian.Uint32(request[4:8]) != stunMagicCookie {
+		return nil, false
+	}
+	if int(binary.BigEndian.Uint16(request[0:2])) != stunBindingRequest {
+		return nil, false
+	}
+	return buildStunMessage(stunBindingSuccess, nil, request[8:20], integrityKey, true), true
 }

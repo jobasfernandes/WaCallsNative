@@ -145,3 +145,43 @@ func TestGroupAllocateKeepsParticipantZero(t *testing.T) {
 	}
 	t.Fatal("participant count attribute not found")
 }
+
+// O relay sonda o caminho com um binding request antes de encaminhar midia. Sem
+// resposta o caminho de volta fica fechado: continuamos publicando e nao
+// recebemos nada.
+func TestBindingSuccessAnswersTheRelayProbe(t *testing.T) {
+	key := []byte("relaykey")
+	request := buildStunMessage(stunBindingRequest, nil,
+		[]byte{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}, key, true)
+
+	response, ok := BuildBindingSuccess(request, key)
+	if !ok {
+		t.Fatal("a binding request from the relay must be answered")
+	}
+	if got := int(binary.BigEndian.Uint16(response[0:2])); got != stunBindingSuccess {
+		t.Errorf("message type = %#x, want binding success %#x", got, stunBindingSuccess)
+	}
+	// O transaction id tem de ser o do pedido, senao o relay nao correlaciona.
+	for i := range 12 {
+		if response[8+i] != request[8+i] {
+			t.Fatalf("transaction id differs at byte %d", i)
+		}
+	}
+	// E tem de vir assinado: o relay valida a integridade com a mesma chave.
+	order := attrOrder(t, response)
+	if len(order) != 2 || order[0] != attrMessageIntegrity || order[1] != attrFingerprint {
+		t.Errorf("attributes = %#x, want message-integrity then fingerprint", order)
+	}
+}
+
+// Nao respondemos a qualquer coisa: uma resposta so sai para um binding request.
+func TestBindingSuccessIgnoresNonRequests(t *testing.T) {
+	key := []byte("relaykey")
+	allocate := BuildGroupAllocate(groupParams([]uint32{0, 1}, [2]uint32{}))
+	if _, ok := BuildBindingSuccess(allocate, key); ok {
+		t.Error("an allocate request must not be answered with a binding success")
+	}
+	if _, ok := BuildBindingSuccess([]byte{1, 2, 3}, key); ok {
+		t.Error("a short packet must not be answered")
+	}
+}

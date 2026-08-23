@@ -2,6 +2,7 @@ package call
 
 import (
 	"errors"
+	"strconv"
 	"sync"
 	"time"
 
@@ -161,6 +162,9 @@ func (m *CallManager) notePeerMediaLocked() {
 
 func (m *CallManager) onRelayData(data []byte) {
 	if transport.IsStunPacket(data) {
+		// The relay answers the allocate here. Discarding it unread is why a
+		// refused subscription looks exactly like a relay that stays silent.
+		m.noteStunResponse(data)
 		return
 	}
 	if transport.IsRtcpPacket(data) {
@@ -340,4 +344,33 @@ func (m *CallManager) noteInboundStream(ssrc uint32, pt uint8, skip, hasSrtp, ha
 		// one they actually send on, so no receive key was ever registered for it.
 		"expected", expected, "subscriptions", subscriptions,
 		"declared_self", skip, "has_srtp", hasSrtp, "has_handler", hasHandler)
+}
+
+// noteStunResponse logs the first relay answer of each distinct kind, so an
+// allocate the relay refuses is visible instead of silently dropped.
+func (m *CallManager) noteStunResponse(data []byte) {
+	info := transport.ParseStunResponse(data)
+	if info == nil || info.StunClass == "indication" {
+		return
+	}
+	kind := info.Method + "/" + info.StunClass + "/" + strconv.Itoa(info.ErrorCode)
+	m.extMu.Lock()
+	if m.seenStun == nil {
+		m.seenStun = map[string]bool{}
+	}
+	if m.seenStun[kind] {
+		m.extMu.Unlock()
+		return
+	}
+	m.seenStun[kind] = true
+	m.extMu.Unlock()
+
+	if info.IsError {
+		m.log.Warn("relay refused a stun request",
+			"method", info.Method, "error_code", info.ErrorCode,
+			"reason", info.ErrorReason)
+		return
+	}
+	m.log.Info("relay stun response",
+		"method", info.Method, "class", info.StunClass, "attributes", len(info.Attributes))
 }
