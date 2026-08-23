@@ -3,6 +3,8 @@ package call
 import (
 	"context"
 	"crypto/rand"
+	"fmt"
+	"strings"
 
 	"wacalls/internal/voip/core"
 	"wacalls/internal/voip/media"
@@ -96,7 +98,12 @@ func (m *CallManager) applyGroupUpdate(action *waBinary.Node) {
 		"call_id", update.CallID,
 		"transaction_id", update.TransactionID,
 		"participants", len(update.Participants),
-		"devices", countRosterDevices(update))
+		"devices", countRosterDevices(update),
+		// Whether the server lists us, and with what state, is what decides if the
+		// other participants can see us at all.
+		"self_in_roster", m.selfInRosterLocked(update),
+		"rekey_requested", update.RekeyRequested,
+		"roster", describeRosterLocked(update))
 }
 
 func (m *CallManager) applyGroupEpoch(ctx context.Context, envelope *signaling.CallControlEnvelope) {
@@ -348,4 +355,38 @@ func (m *CallManager) HandleGroupOffer(
 	if err := m.sock.SendNode(ctx, preaccept); err != nil {
 		m.log.Warn("group preaccept failed to send", "call_id", roster.CallID, "err", err)
 	}
+}
+
+// selfInRosterLocked reports whether the server lists this device in the roster.
+// A call where we never appear is a call the other participants cannot see us in.
+// Caller holds m.mu.
+func (m *CallManager) selfInRosterLocked(update *signaling.GroupCallUpdate) bool {
+	ourBase := wanode.CleanJID(m.ownCredJid())
+	for _, participant := range update.Participants {
+		for _, device := range participant.Devices {
+			if wanode.CleanJID(device.JID.String()) == ourBase {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// describeRosterLocked renders the roster compactly for the log: who is on the
+// call, in what state, and with which participant ids. Caller holds m.mu.
+func describeRosterLocked(update *signaling.GroupCallUpdate) string {
+	var b strings.Builder
+	for i, participant := range update.Participants {
+		if i > 0 {
+			b.WriteString(" | ")
+		}
+		fmt.Fprintf(&b, "%s state=%s", participant.JID.User, participant.State)
+		for _, device := range participant.Devices {
+			fmt.Fprintf(&b, " dev=%s", device.JID.String())
+			if device.HasPID {
+				fmt.Fprintf(&b, ":pid%d", device.PID)
+			}
+		}
+	}
+	return b.String()
 }

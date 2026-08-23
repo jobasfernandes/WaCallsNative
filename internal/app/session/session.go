@@ -221,7 +221,12 @@ func (s *Session) handleEvent(rawEvt any) {
 		// user_action and screen_share all land as unknown call events.
 		if isGroupControlNode(evt.Node) {
 			s.calls.HandleControl(ctx, evt.Node)
+			return
 		}
+		// Anything else that arrives untyped is logged with its child tags: when a
+		// group call stalls, the first question is whether the stanza we are
+		// waiting for reached us at all.
+		s.log.Debug("unhandled call node", "children", callNodeChildTags(evt.Node))
 	}
 }
 
@@ -417,4 +422,16 @@ func isGroupControlNode(node *waBinary.Node) bool {
 		}
 	}
 	return false
+}
+
+func callNodeChildTags(node *waBinary.Node) []string {
+	if node == nil {
+		return nil
+	}
+	children := node.GetChildren()
+	tags := make([]string, len(children))
+	for i, c := range children {
+		tags[i] = c.Tag
+	}
+	return tags
 }
