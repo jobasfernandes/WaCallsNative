@@ -27,13 +27,26 @@ type Audio struct {
 	onPeerPCM    func([]float32)
 	detached     bool
 
-	jitter    *jitterBuffer
-	lastFrame []float32
-	concealed int
+	// streams is one receive pipeline per sender SSRC. A 1:1 call has exactly
+	// one; a group call has one per participant device.
+	streams    map[uint32]*inboundStream
+	newDecoder DecoderFactory
 }
 
+// DecoderFactory builds a decoder for a newly seen sender. It is nil on a 1:1
+// call, where the single codec passed to New answers for the only stream.
+type DecoderFactory func() (core.AudioCodec, error)
+
 func New(codec core.AudioCodec) *Audio {
-	return &Audio{codec: codec, jitter: newJitterBuffer(jitterDepth)}
+	return &Audio{codec: codec, streams: map[uint32]*inboundStream{}}
+}
+
+// SetDecoderFactory enables per-participant decoding. Without it a second sender
+// is dropped, which is correct on a 1:1 call.
+func (a *Audio) SetDecoderFactory(f DecoderFactory) {
+	a.mu.Lock()
+	a.newDecoder = f
+	a.mu.Unlock()
 }
 
 func (a *Audio) Name() string {
@@ -67,7 +80,24 @@ func (a *Audio) Detach() {
 		scope.Observer.ReleaseMem(audioCodecBytes)
 		a.logOffPointCounts(scope)
 	}
+	a.closeStreams()
 	a.codec.Close()
+}
+
+// closeStreams releases the decoders the factory built. The first stream shares
+// the extension's own codec, which Detach closes once on its own; closing it here
+// too would free the native encoder state twice.
+func (a *Audio) closeStreams() {
+	a.mu.Lock()
+	streams := a.streams
+	a.streams = map[uint32]*inboundStream{}
+	own := a.codec
+	a.mu.Unlock()
+	for _, s := range streams {
+		if s.codec != own {
+			s.close()
+		}
+	}
 }
 
 // logOffPointCounts reports, once per call, how many inbound frames the decoder
@@ -166,26 +196,18 @@ func (a *Audio) startSendLoopLocked() {
 	}()
 }
 
-// handleInbound feeds the packet through the jitter buffer and plays out whatever it
-// releases in sequence order: present frames are decoded (in order, so the stateful
-// codec stays coherent) and missing ones are concealed.
+// handleInbound routes the packet to its sender's pipeline and emits whatever the
+// mix releases. Routing by SSRC is what lets a group call decode each participant
+// with its own stateful decoder.
 func (a *Audio) handleInbound(pkt *media.RtpPacket) {
 	a.mu.Lock()
-	frames := a.jitter.push(pkt.Header.SequenceNumber, pkt.Payload)
-	var out [][]float32
-	for _, fr := range frames {
-		if fr.present {
-			pcm, err := a.codec.Decode(fr.payload)
-			if err != nil || len(pcm) == 0 {
-				continue
-			}
-			a.lastFrame = pcm
-			a.concealed = 0
-			out = append(out, pcm)
-		} else if concealed := a.concealLocked(); concealed != nil {
-			out = append(out, concealed)
-		}
+	stream := a.streamFor(pkt.Header.Ssrc)
+	if stream == nil {
+		a.mu.Unlock()
+		return
 	}
+	stream.push(pkt.Header.SequenceNumber, pkt.Payload)
+	out := a.drainMixLocked()
 	cb := a.onPeerPCM
 	a.mu.Unlock()
 	if cb != nil {
@@ -195,22 +217,116 @@ func (a *Audio) handleInbound(pkt *media.RtpPacket) {
 	}
 }
 
-// concealLocked produces a frame to cover a lost packet: the last decoded frame faded
-// out once, then silence for any consecutive losses. Caller holds a.mu.
-func (a *Audio) concealLocked() []float32 {
-	n := a.codec.FrameSize()
-	if len(a.lastFrame) > 0 {
-		n = len(a.lastFrame)
+// streamFor returns the pipeline for one sender, creating it on first sight. The
+// first sender uses the codec this extension was built with; any further sender
+// needs the decoder factory, because one decoder cannot serve two streams.
+// Caller holds a.mu.
+func (a *Audio) streamFor(ssrc uint32) *inboundStream {
+	if s, ok := a.streams[ssrc]; ok {
+		return s
 	}
-	pcm := make([]float32, n)
-	if a.concealed == 0 && len(a.lastFrame) > 1 {
-		last := len(pcm) - 1
-		for i := range pcm {
-			pcm[i] = a.lastFrame[i] * (1 - float32(i)/float32(last))
+	if len(a.streams) == 0 {
+		s := newInboundStream(a.codec)
+		a.streams[ssrc] = s
+		return s
+	}
+	if a.newDecoder == nil {
+		if a.scope != nil {
+			a.scope.Log.Debug("dropping audio from a second sender: no decoder factory",
+				"ssrc", ssrc)
+		}
+		return nil
+	}
+	decoder, err := a.newDecoder()
+	if err != nil {
+		if a.scope != nil {
+			a.scope.Log.Warn("participant decoder unavailable", "ssrc", ssrc, "err", err)
+		}
+		return nil
+	}
+	s := newInboundStream(decoder)
+	a.streams[ssrc] = s
+	return s
+}
+
+// drainMixLocked emits one summed frame per round while every active stream has a
+// frame ready. A stream that stops delivering is skipped once another has run
+// maxMixLag frames ahead, so one silent participant cannot hold up the others.
+// Caller holds a.mu.
+func (a *Audio) drainMixLocked() [][]float32 {
+	var out [][]float32
+	for {
+		contributors, ok := a.readyContributorsLocked()
+		if !ok {
+			return out
+		}
+		out = append(out, mixFrames(contributors))
+	}
+}
+
+// readyContributorsLocked takes one frame from each stream that should be in the
+// next mixed frame, or reports that the mix must wait. Caller holds a.mu.
+func (a *Audio) readyContributorsLocked() ([][]float32, bool) {
+	if len(a.streams) == 0 {
+		return nil, false
+	}
+	maxReady := 0
+	for _, s := range a.streams {
+		if len(s.ready) > maxReady {
+			maxReady = len(s.ready)
 		}
 	}
-	a.concealed++
-	return pcm
+	if maxReady == 0 {
+		return nil, false
+	}
+	// Wait for the stragglers only while nobody has run too far ahead.
+	if maxReady < maxMixLag {
+		for _, s := range a.streams {
+			if len(s.ready) == 0 {
+				return nil, false
+			}
+		}
+	}
+	var contributors [][]float32
+	for _, s := range a.streams {
+		if len(s.ready) == 0 {
+			continue
+		}
+		contributors = append(contributors, s.ready[0])
+		s.ready = s.ready[1:]
+	}
+	if len(contributors) == 0 {
+		return nil, false
+	}
+	return contributors, true
+}
+
+// mixFrames sums the contributors sample by sample, saturating at the edges of
+// the range rather than wrapping.
+func mixFrames(frames [][]float32) []float32 {
+	if len(frames) == 1 {
+		return frames[0]
+	}
+	size := 0
+	for _, f := range frames {
+		if len(f) > size {
+			size = len(f)
+		}
+	}
+	out := make([]float32, size)
+	for _, f := range frames {
+		for i, v := range f {
+			out[i] += v
+		}
+	}
+	for i, v := range out {
+		if v > 1 {
+			out[i] = 1
+		} else if v < -1 {
+			out[i] = -1
+		}
+	}
+	return out
 }
 
 var _ core.AudioSink = (*Audio)(nil)
