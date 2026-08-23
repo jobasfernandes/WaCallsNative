@@ -337,6 +337,7 @@ func (m *CallManager) cleanupMedia() {
 	m.declaredSelf = map[uint32]bool{}
 	m.seenInbound = map[uint64]bool{}
 	m.seenStun = map[string]bool{}
+	m.seenUnroutable = map[string]bool{}
 	m.extMu.Unlock()
 
 	for _, e := range m.extensions {

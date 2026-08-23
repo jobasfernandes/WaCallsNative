@@ -161,6 +161,17 @@ func (m *CallManager) notePeerMediaLocked() {
 }
 
 func (m *CallManager) onRelayData(data []byte) {
+	// In multi-participant mode the relay prepends a forwarding header to the
+	// media it bridges. Left wrapped, the packet matches neither STUN nor RTP and
+	// falls off the end of this function unlogged, which is why no participant is
+	// ever heard.
+	if payload, wrapped, valid := transport.UnwrapGroupForwardingPacket(data); wrapped {
+		if !valid {
+			m.noteUnroutable("malformed forwarding header", len(data))
+			return
+		}
+		data = payload
+	}
 	if transport.IsStunPacket(data) {
 		// The relay answers the allocate here. Discarding it unread is why a
 		// refused subscription looks exactly like a relay that stays silent.
@@ -217,9 +228,11 @@ func (m *CallManager) onRelayData(data []byte) {
 		return
 	}
 	if !transport.IsRtpPacket(data) {
+		m.noteUnroutable("neither stun nor rtp", len(data))
 		return
 	}
 	if len(data) < 12 {
+		m.noteUnroutable("shorter than an rtp header", len(data))
 		return
 	}
 	pt := data[1] & 0x7f
@@ -268,7 +281,7 @@ func (m *CallManager) onRelayData(data []byte) {
 	}
 	// Subscription bootstrap only after the packet authenticated: RTP-shaped bytes
 	// with a spoofed SSRC must never redirect the peer subscription.
-	if pt == core.PayloadTypeWhatsAppOpus {
+	if core.IsWhatsAppAudioPayload(pt) {
 		m.mu.Lock()
 		// A group call subscribes to every participant at once, and the roster is
 		// what says who they are. Latching onto the first stream that authenticates
@@ -286,7 +299,7 @@ func (m *CallManager) onRelayData(data []byte) {
 	// Only the audio stream feeds the quality metrics: it is the one continuous
 	// stream, so jitter and loss mean something. Sporadic streams carry their own
 	// sequence and timestamp space and would read as huge loss.
-	if recvStats != nil && pt == core.PayloadTypeWhatsAppOpus {
+	if recvStats != nil && core.IsWhatsAppAudioPayload(pt) {
 		recvStats.NoteRTP(pkt.Header.SequenceNumber, pkt.Header.Timestamp, uint64(time.Now().UnixMilli()))
 	}
 	handler(pkt)
@@ -373,4 +386,21 @@ func (m *CallManager) noteStunResponse(data []byte) {
 	}
 	m.log.Info("relay stun response",
 		"method", info.Method, "class", info.StunClass, "attributes", len(info.Attributes))
+}
+
+// noteUnroutable reports, once per reason, a packet the relay delivered that
+// this call could not classify. Dropping these unlogged hides a dead media path
+// behind a call that otherwise looks healthy.
+func (m *CallManager) noteUnroutable(reason string, size int) {
+	m.extMu.Lock()
+	if m.seenUnroutable == nil {
+		m.seenUnroutable = map[string]bool{}
+	}
+	if m.seenUnroutable[reason] {
+		m.extMu.Unlock()
+		return
+	}
+	m.seenUnroutable[reason] = true
+	m.extMu.Unlock()
+	m.log.Warn("relay packet not routable", "reason", reason, "bytes", size)
 }

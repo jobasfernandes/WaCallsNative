@@ -60,6 +60,7 @@ func (a *Audio) Attach(scope *engine.CallScope) error {
 	a.startSendLoopLocked()
 	a.mu.Unlock()
 	scope.OnRTP(core.PayloadTypeWhatsAppOpus, a.handleInbound)
+	scope.OnRTP(core.PayloadTypeWhatsAppOpusAlt, a.handleInbound)
 	return nil
 }
 

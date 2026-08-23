@@ -40,7 +40,10 @@ const (
 )
 
 const (
-	PayloadTypeWhatsAppOpus    = 120
+	PayloadTypeWhatsAppOpus = 120
+	// WhatsApp sends the same audio stream under either payload type; group
+	// calls use 121 throughout, and a receiver bound to 120 alone hears nobody.
+	PayloadTypeWhatsAppOpusAlt = 121
 	PayloadTypeWhatsAppAppData = 119
 )
 
@@ -113,4 +116,9 @@ var DefaultAudioConfig = AudioEngineConfig{
 	PlaybackOutputSize: 256,
 	MaxBufferSize:      1600,
 	IntervalMs:         20,
+}
+
+// IsWhatsAppAudioPayload reports whether a payload type carries WhatsApp audio.
+func IsWhatsAppAudioPayload(pt uint8) bool {
+	return pt == PayloadTypeWhatsAppOpus || pt == PayloadTypeWhatsAppOpusAlt
 }

@@ -73,13 +73,14 @@ type CallManager struct {
 	// update, which would reset the outbound SRTP contexts mid-call.
 	groupSendKeySet bool
 
-	extensions   []engine.Extension
-	extMu        sync.Mutex
-	rtpHandlers  map[uint8]func(*media.RtpPacket)
-	declaredSelf map[uint32]bool
-	seenInbound  map[uint64]bool
-	seenStun     map[string]bool
-	extAttached  bool
+	extensions     []engine.Extension
+	extMu          sync.Mutex
+	rtpHandlers    map[uint8]func(*media.RtpPacket)
+	declaredSelf   map[uint32]bool
+	seenInbound    map[uint64]bool
+	seenStun       map[string]bool
+	seenUnroutable map[string]bool
+	extAttached    bool
 
 	OnStateChange func(*CallInfo)
 	OnIncoming    func(*CallInfo)

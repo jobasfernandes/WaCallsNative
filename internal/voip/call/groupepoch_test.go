@@ -520,3 +520,71 @@ func TestGroupMediaRelayIsASingleEndpoint(t *testing.T) {
 		t.Error("no endpoints must yield no relay")
 	}
 }
+
+// O relay entrega a midia dos participantes embrulhada num header de
+// forwarding. Sem desembrulhar, o pacote nao parece RTP nem STUN e e descartado
+// sem deixar rastro: e por isso que nenhum participante e ouvido.
+func TestForwardedMediaIsUnwrappedAndDelivered(t *testing.T) {
+	sock := &encryptingSock{}
+	sock.ownLID = lidJID("999")
+	m := NewCallManager(sock, slog.Default())
+	m.currentCall = &CallInfo{CallID: "CALL1", PeerJid: "peer:0@lid"}
+	m.relay = &fakeRelay{}
+
+	self := types.JID{User: "999", Server: types.HiddenUserServer, Device: 27}
+	node := groupUpdateNode(25,
+		connectedDevice("111", 1),
+		waBinary.Node{
+			Tag:   "user",
+			Attrs: waBinary.Attrs{"jid": lidJID("999"), "state": "connected"},
+			Content: []waBinary.Node{{
+				Tag: "device", Attrs: waBinary.Attrs{"jid": self, "pid": "2"},
+			}},
+		},
+	)
+	node.GetChildren()[0].Attrs["rekey"] = "1"
+	m.HandleControl(context.Background(), controlNode(node))
+
+	device := ensureDeviceJid(types.JID{User: "111", Server: types.HiddenUserServer}.String())
+	state := m.GroupState()
+	sendKM, err := media.DerivePerJidSrtpKey(state.Epoch, device)
+	if err != nil {
+		t.Fatalf("DerivePerJidSrtpKey: %v", err)
+	}
+	sender := engine.NewSrtpManager(sendKM, km(99), core.SRTPSendAuthTagLen, core.SRTPRecvAuthTagLen)
+	pkt := &media.RtpPacket{
+		Header: media.NewRtpHeader(core.PayloadTypeWhatsAppOpus, 7, 160,
+			media.GenerateSecureSsrc("CALL1", device, core.SsrcCounterAudio)),
+		Payload: []byte{0xAA, 0xBB},
+	}
+	wire, err := sender.Protect(pkt)
+	if err != nil {
+		t.Fatalf("Protect: %v", err)
+	}
+
+	var got int
+	m.registerRTPHandler(core.PayloadTypeWhatsAppOpus, func(*media.RtpPacket) { got++ })
+
+	// Header de forwarding de 8 bytes, como o relay prefixa em modo
+	// multi-participante.
+	forwarded := append([]byte{0x09, 0x02, 0, 0, 0, 0, 0, 0}, wire...)
+	m.onRelayData(forwarded)
+
+	if got != 1 {
+		t.Errorf("delivered %d forwarded packets, want 1", got)
+	}
+}
+
+// O WhatsApp manda o mesmo audio sob 120 ou 121, e numa chamada de grupo a
+// captura mostra 121 em todos os pacotes. Um receptor preso ao 120 nao ouve
+// ninguem.
+func TestAudioArrivesUnderEitherPayloadType(t *testing.T) {
+	for _, pt := range []uint8{core.PayloadTypeWhatsAppOpus, core.PayloadTypeWhatsAppOpusAlt} {
+		if !core.IsWhatsAppAudioPayload(pt) {
+			t.Errorf("payload type %d must count as WhatsApp audio", pt)
+		}
+	}
+	if core.IsWhatsAppAudioPayload(core.PayloadTypeWhatsAppAppData) {
+		t.Error("app-data is not audio")
+	}
+}
