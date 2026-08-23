@@ -101,6 +101,14 @@ func (c *Client) HandleOffer(ctx context.Context, node *waBinary.Node, peer type
 		c.reject(ctx, node, peer, "session at capacity")
 		return
 	}
+	// A group offer carries the roster instead of a call key: the shared epoch
+	// arrives later over enc_rekey. Requiring a key here would reject every group
+	// call before any group handling runs.
+	if roster, isGroup, err := signaling.ParseGroupInviteSnapshot(info.InnerNode); err == nil && isGroup {
+		cm := c.createCall(info.CallID)
+		cm.HandleGroupOffer(ctx, node, peer, roster)
+		return
+	}
 	callKey, err := signaling.DecryptCallKeyInNode(ctx, c.sock, info.InnerNode, peer)
 	if err != nil {
 		c.log.Error("offer call key undecryptable; rejecting call",

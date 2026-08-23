@@ -11,6 +11,7 @@ import (
 	"wacalls/internal/voip/wanode"
 
 	waBinary "go.mau.fi/whatsmeow/binary"
+	"go.mau.fi/whatsmeow/types"
 )
 
 // GroupState is what a call knows about a group beyond the 1:1 state: who is on
@@ -301,4 +302,71 @@ func (m *CallManager) ourDeviceJidLocked() string {
 	}
 	ourBase := wanode.CleanJID(m.ownCredJid())
 	return ensureDeviceJid(findOurDevice(participants, ourBase, m.ownCredJid()))
+}
+
+// HandleGroupOffer accepts an invite into an active group call. Unlike a 1:1
+// offer it carries no call key: the shared epoch arrives afterwards over
+// enc_rekey, and until it does the call has a roster but no media.
+func (m *CallManager) HandleGroupOffer(
+	ctx context.Context,
+	node *waBinary.Node,
+	peerJid types.JID,
+	roster *signaling.GroupCallUpdate,
+) {
+	info := signaling.ExtractNodeInfo(node)
+	if info == nil || roster == nil {
+		return
+	}
+	creator := roster.CallCreator
+	if creator.IsEmpty() {
+		creator = peerJid
+	}
+
+	m.mu.Lock()
+	call := NewIncomingCall(roster.CallID, peerJid.String(), creator.String(), "", core.CallMediaTypeAudio)
+	m.currentCall = call
+	m.group = &GroupState{Roster: roster, TransactionID: roster.TransactionID}
+	m.mu.Unlock()
+
+	m.log.Info("group call offer accepted",
+		"call_id", roster.CallID,
+		"transaction_id", roster.TransactionID,
+		"participants", len(roster.Participants),
+		"devices", countRosterDevices(roster))
+
+	if m.OnIncoming != nil {
+		m.OnIncoming(call)
+	}
+	m.emitState()
+
+	requestID := signaling.GenerateCallStanzaID()
+	preaccept, err := signaling.BuildActiveGroupPreaccept(roster.CallID, creator, requestID)
+	if err != nil {
+		m.log.Warn("group preaccept not built", "call_id", roster.CallID, "err", err)
+		return
+	}
+	if err := m.sock.SendNode(ctx, preaccept); err != nil {
+		m.log.Warn("group preaccept failed to send", "call_id", roster.CallID, "err", err)
+	}
+}
+
+// AcceptGroupCall answers an invite this device already preaccepted. The group
+// accept carries no encrypted call key, because the media keys off the shared
+// epoch rather than a per-call key.
+func (m *CallManager) AcceptGroupCall(ctx context.Context) error {
+	m.mu.Lock()
+	call := m.currentCall
+	if call == nil || m.group == nil {
+		m.mu.Unlock()
+		return &CallError{"no group call to accept"}
+	}
+	creator := wanode.MustJID(call.CallCreator)
+	callID := call.CallID
+	m.mu.Unlock()
+
+	accept, err := signaling.BuildActiveGroupAccept(callID, creator, signaling.GenerateCallStanzaID())
+	if err != nil {
+		return err
+	}
+	return m.sock.SendNode(ctx, accept)
 }
