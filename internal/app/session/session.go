@@ -85,7 +85,17 @@ func (s *Session) makeExtensions() []engine.Extension {
 			s.log.Warn("native mlow encoder unavailable; call uses the pure-Go encoder")
 		}
 		s.log.Debug("audio codec ready", "encoder", mode)
-		exts = append(exts, audio.New(opus.WithFallback(wrapped)))
+		inbound := audio.New(opus.WithFallback(wrapped))
+		// One decoder per participant: MLow carries state between frames, so a
+		// group call cannot decode several senders through a single decoder.
+		inbound.SetDecoderFactory(func() (core.AudioCodec, error) {
+			dec, err := mlow.NewMLowCodec(mlow.DefaultCodecOptions)
+			if err != nil {
+				return nil, err
+			}
+			return opus.WithFallback(dec), nil
+		})
+		exts = append(exts, inbound)
 	} else {
 		s.log.Warn("MLow codec unavailable; call runs without audio", "err", err)
 	}
