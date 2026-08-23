@@ -60,18 +60,19 @@ type RelayConfig struct {
 }
 
 type relayConnection struct {
-	state         atomic.Int32
-	degraded      atomic.Bool
-	pc            *webrtc.PeerConnection
-	channel       *webrtc.DataChannel
-	id            string
-	info          RelayConfig
-	localUfrag    string
-	keepalive     *time.Ticker
-	stopCh        chan struct{}
-	mem           int64
-	teardownOnce  sync.Once
-	probeAnswered bool
+	state           atomic.Int32
+	degraded        atomic.Bool
+	pc              *webrtc.PeerConnection
+	channel         *webrtc.DataChannel
+	id              string
+	info            RelayConfig
+	localUfrag      string
+	keepalive       *time.Ticker
+	stopCh          chan struct{}
+	mem             int64
+	teardownOnce    sync.Once
+	probeAnswered   bool
+	groupRegistered bool
 }
 
 func (c *relayConnection) getState() relayConnState  { return relayConnState(c.state.Load()) }
@@ -421,6 +422,28 @@ func (m *SctpRelayManager) sendRegistration(conn *relayConnection) {
 	if conn.getState() != relayStateOpen || conn.channel == nil {
 		return
 	}
+	// A group call registers with a consent ping and the allocate, and with no
+	// binding request at all: a binding request puts the relay in ICE-consent
+	// mode, where it never bridges the participants' media to us.
+	if cfg := m.groupConfig(); cfg != nil {
+		if cfg.RelayName != "" && info.Name != cfg.RelayName {
+			return
+		}
+		packets := GroupRegistrationPackets(cfg, info)
+		if len(packets) == 0 {
+			return
+		}
+		for _, p := range packets {
+			m.sendRaw(conn, p)
+		}
+		if !conn.groupRegistered {
+			conn.groupRegistered = true
+			m.log.Info("group relay registration sent",
+				"relay", info.Name, "pids", cfg.PIDs,
+				"group_token", len(cfg.tokenFor(info.Name)) > 0)
+		}
+		return
+	}
 	ssrc := m.subscriptionSsrc.Load()
 	if ssrc == 0 {
 		ssrc = m.audioSsrc.Load()
@@ -441,32 +464,6 @@ func (m *SctpRelayManager) sendRegistration(conn *relayConnection) {
 	m.sendRaw(conn, BuildBindingRequestWithSubs(nil, nil, subs, false, false))
 
 	if len(info.RawToken) > 0 {
-		if cfg := m.groupConfig(); cfg != nil {
-			if cfg.RelayName != "" && info.Name != cfg.RelayName {
-				return
-			}
-			token, key := info.RawToken, hmacKey
-			if groupToken := cfg.tokenFor(info.Name); len(groupToken) > 0 {
-				token = groupToken
-			}
-			if len(cfg.Key) > 0 {
-				key = cfg.Key
-			}
-			allocate := BuildGroupAllocate(GroupAllocateParams{
-				RelayToken: token, Streams: cfg.Streams,
-				AppDataSSRC: cfg.AppDataSSRC, PIDs: cfg.PIDs, HBHFEC: cfg.HBHFEC,
-				HMACKey: key, RelayIP: info.IP, RelayPort: info.Port,
-			})
-			m.sendRaw(conn, allocate)
-			// Whether the allocate leaves, for which relay and asking for which
-			// participants, is the difference between "the relay refuses us" and
-			// "we never asked", which nothing else distinguishes.
-			m.log.Info("group allocate sent",
-				"relay", info.Name, "relay_ip", info.IP,
-				"pids", cfg.PIDs, "bytes", len(allocate),
-				"group_token", len(cfg.tokenFor(info.Name)) > 0)
-			return
-		}
 		selfSsrcs, peerSsrcs := m.streamSsrcsSnapshot()
 		if len(selfSsrcs) == 0 {
 			selfSsrcs = []uint32{m.audioSsrc.Load()}
@@ -517,7 +514,9 @@ func (m *SctpRelayManager) startKeepalive(conn *relayConnection) {
 				}
 				m.sendRaw(conn, BuildWhatsAppPing())
 				ticks++
-				if ticks%registrationRefreshTicks == 0 {
+				// The relay's consent goes stale in about a second, and a group
+				// call loses the bridge with it.
+				if m.groupConfig() != nil || ticks%registrationRefreshTicks == 0 {
 					m.sendRegistration(conn)
 				}
 			case <-conn.stopCh:

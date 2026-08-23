@@ -446,3 +446,30 @@ func BuildBindingSuccess(request, integrityKey []byte) ([]byte, bool) {
 	}
 	return buildStunMessage(stunBindingSuccess, nil, request[8:20], integrityKey, true), true
 }
+
+// GroupRegistrationPackets is what a group call sends to the relay, in order: the
+// consent ping first, then the allocate.
+//
+// It deliberately sends no binding request. A binding request puts the relay in
+// ICE-consent mode, where the bridge never forms at all.
+func GroupRegistrationPackets(cfg *GroupAllocateConfig, info RelayConfig) [][]byte {
+	if cfg == nil || len(info.RawToken) == 0 {
+		return nil
+	}
+	token := info.RawToken
+	if groupToken := cfg.tokenFor(info.Name); len(groupToken) > 0 {
+		token = groupToken
+	}
+	key := []byte(info.Key)
+	if len(cfg.Key) > 0 {
+		key = cfg.Key
+	}
+	return [][]byte{
+		BuildWhatsAppPing(),
+		BuildGroupAllocate(GroupAllocateParams{
+			RelayToken: token, Streams: cfg.Streams, AppDataSSRC: cfg.AppDataSSRC,
+			PIDs: cfg.PIDs, HBHFEC: cfg.HBHFEC, HMACKey: key,
+			RelayIP: info.IP, RelayPort: info.Port,
+		}),
+	}
+}

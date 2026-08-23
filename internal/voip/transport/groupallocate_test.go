@@ -185,3 +185,32 @@ func TestBindingSuccessIgnoresNonRequests(t *testing.T) {
 		t.Error("a short packet must not be answered")
 	}
 }
+
+// O ping vai antes do allocate, e nenhum binding request sai: um binding request
+// poe o relay em modo de consent ICE e a ponte nunca se forma.
+func TestGroupRegistrationSendsPingThenAllocateOnly(t *testing.T) {
+	cfg := &GroupAllocateConfig{
+		Streams: [9]uint32{10, 11, 12, 20, 21, 22, 30, 31, 32},
+		PIDs:    []uint32{0, 1}, Key: []byte("relaykey"),
+		Tokens: map[string][]byte{"sao1": []byte("grouptok")},
+	}
+	info := RelayConfig{
+		Name: "sao1", IP: "192.168.1.10", Port: 3480,
+		RawToken: []byte("onetoone"), Key: "otherkey",
+	}
+	packets := GroupRegistrationPackets(cfg, info)
+	if len(packets) != 2 {
+		t.Fatalf("sent %d packets, want the ping and the allocate only", len(packets))
+	}
+	if got := binary.BigEndian.Uint16(packets[0][0:2]); got != whatsappPing {
+		t.Errorf("first packet = %#x, want the consent ping", got)
+	}
+	if got := int(binary.BigEndian.Uint16(packets[1][0:2])); got != stunAllocateRequest {
+		t.Errorf("second packet = %#x, want the allocate", got)
+	}
+	for _, p := range packets {
+		if binary.BigEndian.Uint16(p[0:2]) == stunBindingRequest {
+			t.Error("a group registration must send no binding request")
+		}
+	}
+}
