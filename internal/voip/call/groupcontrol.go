@@ -3,7 +3,10 @@ package call
 import (
 	"context"
 
+	"wacalls/internal/voip/core"
+	"wacalls/internal/voip/media"
 	"wacalls/internal/voip/signaling"
+	"wacalls/internal/voip/wanode"
 
 	waBinary "go.mau.fi/whatsmeow/binary"
 )
@@ -85,6 +88,7 @@ func (m *CallManager) applyGroupUpdate(action *waBinary.Node) {
 	}
 	m.group.Roster = update
 	m.group.TransactionID = update.TransactionID
+	m.syncGroupRecvKeysLocked()
 	m.log.Info("group roster applied",
 		"call_id", update.CallID,
 		"transaction_id", update.TransactionID,
@@ -119,6 +123,7 @@ func (m *CallManager) applyGroupEpoch(ctx context.Context, envelope *signaling.C
 		m.group = &GroupState{}
 	}
 	m.group.Epoch = epoch
+	m.syncGroupRecvKeysLocked()
 	m.mu.Unlock()
 	m.log.Info("group epoch installed",
 		"call_id", envelope.CallID, "transaction_id", rekey.TransactionID, "bytes", len(epoch))
@@ -139,4 +144,54 @@ func countRosterDevices(update *signaling.GroupCallUpdate) int {
 		n += len(p.Devices)
 	}
 	return n
+}
+
+// syncGroupRecvKeysLocked registers one SRTP receive key per remote participant
+// device, so audio from every one of them authenticates. It runs whenever any of
+// its three inputs lands, because the roster, the epoch and the SRTP session
+// arrive in no fixed order.
+//
+// Only receive keys: the send key still comes from the 1:1 handshake. Until the
+// group allocate exists nothing is sent on a group stream anyway.
+//
+// Caller holds m.mu.
+func (m *CallManager) syncGroupRecvKeysLocked() {
+	if m.group == nil || m.group.Roster == nil || len(m.group.Epoch) == 0 || m.srtp == nil {
+		return
+	}
+	call := m.currentCall
+	if call == nil {
+		return
+	}
+	ourBase := wanode.CleanJID(m.ownCredJid())
+	registered := 0
+	for _, participant := range m.group.Roster.Participants {
+		for _, device := range participant.Devices {
+			if device.JID.IsEmpty() {
+				continue
+			}
+			raw := device.JID.String()
+			// Registering our own device as a receive key would make the relay
+			// echo of our own stream authenticate as another participant.
+			if wanode.CleanJID(raw) == ourBase {
+				continue
+			}
+			deviceJID := ensureDeviceJid(raw)
+			keying, err := media.DerivePerJidSrtpKey(m.group.Epoch, deviceJID)
+			if err != nil {
+				m.log.Warn("participant key derivation failed",
+					"call_id", call.CallID, "device", deviceJID, "err", err)
+				continue
+			}
+			ssrc := media.GenerateSecureSsrc(call.CallID, deviceJID, core.SsrcCounterAudio)
+			m.srtp.SetRecvKeyForSSRC(ssrc, keying)
+			registered++
+		}
+	}
+	if registered > 0 {
+		m.log.Info("participant receive keys registered",
+			"call_id", call.CallID,
+			"transaction_id", m.group.TransactionID,
+			"devices", registered)
+	}
 }
