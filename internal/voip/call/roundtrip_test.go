@@ -61,6 +61,7 @@ type fakeRelay struct {
 	onGroupAllocate func(transport.GroupAllocateConfig) bool
 
 	groupMu   sync.Mutex
+	ssrc      uint32
 	lastGroup *transport.GroupAllocateConfig
 }
 
@@ -77,8 +78,18 @@ func (r *fakeRelay) Broadcast(data []byte) {
 		r.onData(data)
 	}
 }
-func (r *fakeRelay) HasConnection() bool               { return !r.noConn }
-func (r *fakeRelay) SetSsrc(uint32)                    {}
+func (r *fakeRelay) HasConnection() bool { return !r.noConn }
+func (r *fakeRelay) SetSsrc(ssrc uint32) {
+	r.groupMu.Lock()
+	r.ssrc = ssrc
+	r.groupMu.Unlock()
+}
+
+func (r *fakeRelay) sentSsrc() uint32 {
+	r.groupMu.Lock()
+	defer r.groupMu.Unlock()
+	return r.ssrc
+}
 func (r *fakeRelay) SetSubscriptionSsrc(uint32)        {}
 func (r *fakeRelay) SetStreamSsrcs([]uint32, []uint32) {}
 func (r *fakeRelay) SetGroupAllocate(cfg transport.GroupAllocateConfig) bool {

@@ -105,6 +105,7 @@ func (m *CallManager) applyGroupUpdate(ctx context.Context, action *waBinary.Nod
 	}
 	m.group.Roster = update
 	m.group.TransactionID = update.TransactionID
+	m.ensureGroupMediaSessionLocked()
 	m.connectGroupRelayLocked(update)
 	m.distributeGroupEpochLocked(ctx, update)
 	m.ensureGroupSrtpLocked()
@@ -665,4 +666,78 @@ func groupTokenAt(tokens [][]byte, id uint32) []byte {
 		return nil
 	}
 	return tokens[id]
+}
+
+// ensureGroupMediaSessionLocked builds what a group call sends on. The 1:1 setup
+// derives both from the call key handshake, which a group call never runs, so
+// without this the send SSRC stays zero: the relay registration gives up before
+// the allocate, the server never sees this device publishing media and drops it
+// back to invited, and no audio is ever produced either.
+//
+// Caller holds m.mu.
+func (m *CallManager) ensureGroupMediaSessionLocked() {
+	if m.group == nil || m.group.Roster == nil || m.relay == nil {
+		return
+	}
+	call := m.currentCall
+	if call == nil {
+		return
+	}
+	ourDeviceJid := m.ourDeviceJidLocked()
+	if ourDeviceJid == "" {
+		return
+	}
+	ssrc := media.GenerateSecureSsrc(call.CallID, ourDeviceJid, core.SsrcCounterAudio)
+	peers := m.remoteAudioSsrcsLocked()
+	if m.selfSsrc == ssrc && m.rtpSession != nil && equalSsrcs(m.peerSsrcs, peers) {
+		return
+	}
+	m.selfSsrc = ssrc
+	if m.rtpSession == nil {
+		m.replaceRtpSession(media.NewWhatsAppOpusSession(ssrc))
+	}
+	m.peerSsrcs = peers
+	m.relay.SetSsrc(ssrc)
+	m.relay.SetSubscriptionSsrc(firstSsrc(peers))
+	m.relay.SetStreamSsrcs([]uint32{ssrc}, peers)
+	m.log.Info("group media session ready",
+		"call_id", call.CallID, "device", ourDeviceJid,
+		"ssrc", ssrc, "subscriptions", len(peers))
+}
+
+// remoteAudioSsrcsLocked lists the primary-audio SSRC of every remote device in
+// the roster, which is what this device subscribes to.
+func (m *CallManager) remoteAudioSsrcsLocked() []uint32 {
+	call := m.currentCall
+	if call == nil || m.group == nil || m.group.Roster == nil {
+		return nil
+	}
+	ourBase := wanode.CleanJID(m.ownCredJid())
+	var out []uint32
+	for _, participant := range m.group.Roster.Participants {
+		for _, device := range participant.Devices {
+			if device.JID.IsEmpty() {
+				continue
+			}
+			raw := device.JID.String()
+			if wanode.CleanJID(raw) == ourBase {
+				continue
+			}
+			out = append(out, media.GenerateSecureSsrc(
+				call.CallID, ensureDeviceJid(raw), core.SsrcCounterAudio))
+		}
+	}
+	return out
+}
+
+func equalSsrcs(a, b []uint32) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

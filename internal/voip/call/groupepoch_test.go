@@ -402,3 +402,46 @@ func TestOurDeviceJidComesFromTheRoster(t *testing.T) {
 		t.Errorf("our device JID = %q, want %q from the roster", got, want)
 	}
 }
+
+// Sem SSRC de envio o registro no relay sai pela porta de tras: sendRegistration
+// desiste antes de mandar o allocate, o servidor nunca ve este device publicando
+// midia e o rebaixa para invited. E sem sessao RTP nada de audio sai. Nenhum dos
+// dois e montado pelo caminho 1:1 numa chamada de grupo, que nao tem chave de
+// chamada nem passa por HandleCallOffer.
+func TestGroupCallBuildsItsSendingMediaSession(t *testing.T) {
+	sock := &encryptingSock{}
+	sock.ownLID = lidJID("999")
+	m := NewCallManager(sock, slog.Default())
+	m.currentCall = &CallInfo{CallID: "CALL1", PeerJid: "peer:0@lid"}
+	relay := &fakeRelay{}
+	m.relay = relay
+
+	self := types.JID{User: "999", Server: types.HiddenUserServer, Device: 27}
+	node := groupUpdateNode(25,
+		connectedDevice("111", 1),
+		waBinary.Node{
+			Tag:   "user",
+			Attrs: waBinary.Attrs{"jid": lidJID("999"), "state": "connected"},
+			Content: []waBinary.Node{{
+				Tag: "device", Attrs: waBinary.Attrs{"jid": self, "pid": "2"},
+			}},
+		},
+	)
+	node.GetChildren()[0].Attrs["rekey"] = "1"
+	m.HandleControl(context.Background(), controlNode(node))
+
+	want := media.GenerateSecureSsrc("CALL1", self.String(), core.SsrcCounterAudio)
+	m.mu.Lock()
+	got, session := m.selfSsrc, m.rtpSession
+	m.mu.Unlock()
+	if got != want {
+		t.Errorf("self SSRC = %d, want %d derived from our own device", got, want)
+	}
+	if session == nil {
+		t.Error("a group call must build the RTP session it sends audio on")
+	}
+	if relay.sentSsrc() != want {
+		t.Errorf("relay SSRC = %d, want %d: without it no allocate is sent",
+			relay.sentSsrc(), want)
+	}
+}
