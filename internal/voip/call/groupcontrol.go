@@ -349,24 +349,3 @@ func (m *CallManager) HandleGroupOffer(
 		m.log.Warn("group preaccept failed to send", "call_id", roster.CallID, "err", err)
 	}
 }
-
-// AcceptGroupCall answers an invite this device already preaccepted. The group
-// accept carries no encrypted call key, because the media keys off the shared
-// epoch rather than a per-call key.
-func (m *CallManager) AcceptGroupCall(ctx context.Context) error {
-	m.mu.Lock()
-	call := m.currentCall
-	if call == nil || m.group == nil {
-		m.mu.Unlock()
-		return &CallError{"no group call to accept"}
-	}
-	creator := wanode.MustJID(call.CallCreator)
-	callID := call.CallID
-	m.mu.Unlock()
-
-	accept, err := signaling.BuildActiveGroupAccept(callID, creator, signaling.GenerateCallStanzaID())
-	if err != nil {
-		return err
-	}
-	return m.sock.SendNode(ctx, accept)
-}

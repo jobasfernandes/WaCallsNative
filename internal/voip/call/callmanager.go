@@ -200,7 +200,26 @@ func (m *CallManager) AcceptCall(ctx context.Context, callID string) error {
 	peer := wanode.MustJID(call.PeerJid)
 	creator := wanode.MustJID(call.CallCreator)
 	relayData := call.RelayData
+	isGroup := m.group != nil
 	m.mu.Unlock()
+
+	// A group call has no per-call key: the media keys off the shared epoch, and
+	// its accept carries no <enc>. Falling through to the 1:1 path here sends
+	// nothing at all, because that path is guarded on the key being present, and
+	// the caller's phone keeps ringing until it times out.
+	if isGroup {
+		accept, err := signaling.BuildActiveGroupAccept(callID, creator, signaling.GenerateCallStanzaID())
+		if err != nil {
+			m.log.Error("build group accept failed", "call_id", callID, "err", err)
+			return err
+		}
+		if err := m.sock.SendNode(ctx, accept); err != nil {
+			m.log.Error("group accept send error", "call_id", callID, "err", err)
+			return err
+		}
+		m.log.Info("group call accepted", "call_id", callID)
+		return nil
+	}
 
 	if key != nil {
 		acceptNode, err := signaling.BuildAcceptStanza(ctx, m.sock, callID, key, peer, creator)

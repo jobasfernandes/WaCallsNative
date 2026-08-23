@@ -138,3 +138,42 @@ func offerGroupInfo() waBinary.Node {
 		Content: []waBinary.Node{userNode("111"), userNode("222")},
 	}
 }
+
+// Aceitar uma chamada de grupo tem de emitir um accept. O accept 1:1 e guardado
+// por "se ha chave de chamada", e numa chamada de grupo nao ha: sem bifurcar,
+// nenhum accept sai e o telefone do outro lado continua tocando ate cair.
+func TestAcceptingAGroupCallSendsAnAccept(t *testing.T) {
+	sock := &recordingSock{}
+	c := groupClient(sock)
+	peer := types.NewJID("5511999990000", types.DefaultUserServer)
+	ctx := context.Background()
+
+	c.HandleOffer(ctx, groupOfferNode("GCALL1"), peer)
+	sock.mu.Lock()
+	sock.sent = nil // descarta o preaccept
+	sock.mu.Unlock()
+
+	if err := c.AcceptCall(ctx, "GCALL1"); err != nil {
+		t.Fatalf("AcceptCall: %v", err)
+	}
+
+	sock.mu.Lock()
+	defer sock.mu.Unlock()
+	var found bool
+	for _, n := range sock.sent {
+		for _, child := range n.GetChildren() {
+			if child.Tag == "accept" {
+				found = true
+				// O accept de grupo nao leva chave cifrada: a midia keia pela epoch.
+				for _, sub := range child.GetChildren() {
+					if sub.Tag == "enc" {
+						t.Error("a group accept must not carry an encrypted call key")
+					}
+				}
+			}
+		}
+	}
+	if !found {
+		t.Fatal("accepting a group call must send an accept stanza")
+	}
+}
