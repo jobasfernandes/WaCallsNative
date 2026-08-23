@@ -19,10 +19,16 @@ import (
 // GroupState is what a call knows about a group beyond the 1:1 state: who is on
 // it and the shared key their media is encrypted with. It stays nil on a 1:1
 // call, so nothing on that path changes.
+// groupEpochBytes is the shared key length the media plane requires.
+const groupEpochBytes = 32
+
 type GroupState struct {
 	Roster        *signaling.GroupCallUpdate
 	Epoch         []byte
 	TransactionID uint32
+	// epochTransactionID is the roster transaction the current epoch answers,
+	// so a resent roster does not produce a second, diverging key.
+	epochTransactionID uint32
 }
 
 // GroupState returns a snapshot of the group state, or nil on a 1:1 call.
@@ -65,13 +71,13 @@ func (m *CallManager) HandleControl(ctx context.Context, node *waBinary.Node) {
 
 	switch envelope.Action.Tag {
 	case "group_update":
-		m.applyGroupUpdate(&envelope.Action)
+		m.applyGroupUpdate(ctx, &envelope.Action)
 	case "enc_rekey":
 		m.applyGroupEpoch(ctx, envelope)
 	}
 }
 
-func (m *CallManager) applyGroupUpdate(action *waBinary.Node) {
+func (m *CallManager) applyGroupUpdate(ctx context.Context, action *waBinary.Node) {
 	update, err := signaling.ParseGroupUpdate(action)
 	if err != nil {
 		m.log.Warn("group update rejected", "call_id", m.callIDForLog(), "err", err)
@@ -94,6 +100,7 @@ func (m *CallManager) applyGroupUpdate(action *waBinary.Node) {
 	m.group.Roster = update
 	m.group.TransactionID = update.TransactionID
 	m.syncGroupRecvKeysLocked()
+	m.distributeGroupEpochLocked(ctx, update)
 	m.log.Info("group roster applied",
 		"call_id", update.CallID,
 		"transaction_id", update.TransactionID,
@@ -389,4 +396,109 @@ func describeRosterLocked(update *signaling.GroupCallUpdate) string {
 		}
 	}
 	return b.String()
+}
+
+// distributeGroupEpochLocked answers a roster that asks for a rekey. The shared
+// key is not handed to us: whoever joins generates it, encrypts it per device and
+// hands it out. Ignoring the request gets this device demoted from connected back
+// to invited and then dropped, which reads as "the call never let me in".
+//
+// Caller holds m.mu.
+func (m *CallManager) distributeGroupEpochLocked(ctx context.Context, update *signaling.GroupCallUpdate) {
+	if !update.RekeyRequested {
+		return
+	}
+	// The roster is resent; distributing twice for one transaction would leave
+	// participants holding different keys.
+	if m.group != nil && m.group.epochTransactionID == update.TransactionID {
+		return
+	}
+	recipients := m.rekeyRecipientsLocked(update)
+	if len(recipients) == 0 {
+		m.log.Warn("group rekey requested but no remote connected device has a PID",
+			"call_id", update.CallID, "transaction_id", update.TransactionID)
+		return
+	}
+	epoch := make([]byte, groupEpochBytes)
+	if _, err := rand.Read(epoch); err != nil {
+		m.log.Error("group epoch generation failed", "call_id", update.CallID, "err", err)
+		return
+	}
+	nodes, _, err := m.sock.CreateParticipantNodes(ctx, recipients, epoch, waBinary.Attrs{"count": "0"})
+	if err != nil {
+		clear(epoch)
+		m.log.Warn("group epoch encryption failed",
+			"call_id", update.CallID, "transaction_id", update.TransactionID, "err", err)
+		return
+	}
+	sent := 0
+	for _, node := range nodes {
+		to, ok := node.Attrs["jid"].(types.JID)
+		if !ok {
+			continue
+		}
+		enc, ok := node.GetOptionalChildByTag("enc")
+		if !ok {
+			continue
+		}
+		ciphertext, ok := enc.Content.([]byte)
+		if !ok || len(ciphertext) == 0 {
+			continue
+		}
+		rekey, buildErr := signaling.BuildGroupEncRekey(signaling.GroupEncRekeyParams{
+			CallID: update.CallID, To: to, CallCreator: update.CallCreator,
+			TransactionID: update.TransactionID, RequestID: signaling.GenerateCallStanzaID(),
+			DeviceKey: signaling.GroupOfferDeviceKey{
+				DeviceJID:  to,
+				EncType:    enc.AttrGetter().String("type"),
+				Ciphertext: ciphertext,
+			},
+		})
+		if buildErr != nil {
+			m.log.Warn("group rekey not built", "call_id", update.CallID, "to", to, "err", buildErr)
+			continue
+		}
+		// One failed recipient is one silent participant, not a dead call.
+		if sendErr := m.sock.SendNode(ctx, rekey); sendErr != nil {
+			m.log.Warn("group rekey send failed", "call_id", update.CallID, "to", to, "err", sendErr)
+			continue
+		}
+		sent++
+	}
+	if m.group == nil {
+		m.group = &GroupState{}
+	}
+	m.group.Epoch = append([]byte(nil), epoch...)
+	m.group.epochTransactionID = update.TransactionID
+	clear(epoch)
+	m.log.Info("group epoch distributed",
+		"call_id", update.CallID, "transaction_id", update.TransactionID,
+		"recipients", len(recipients), "sent", sent)
+	m.syncGroupRecvKeysLocked()
+}
+
+// rekeyRecipientsLocked lists the remote devices that should hold the epoch: the
+// ones the server marked connected and gave a participant id. A device without a
+// PID has no media routed to it, so a key would be wasted. Caller holds m.mu.
+func (m *CallManager) rekeyRecipientsLocked(update *signaling.GroupCallUpdate) []types.JID {
+	ourBase := wanode.CleanJID(m.ownCredJid())
+	seen := map[string]bool{}
+	var out []types.JID
+	for _, participant := range update.Participants {
+		if participant.State != "connected" {
+			continue
+		}
+		for _, device := range participant.Devices {
+			if !device.HasPID || device.JID.IsEmpty() {
+				continue
+			}
+			raw := device.JID.String()
+			if wanode.CleanJID(raw) == ourBase || seen[raw] {
+				continue
+			}
+			seen[raw] = true
+			out = append(out, device.JID)
+		}
+	}
+	return out
 }
