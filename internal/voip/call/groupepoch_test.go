@@ -2,8 +2,16 @@ package call
 
 import (
 	"context"
+	"log/slog"
 	"strconv"
+	"sync"
 	"testing"
+	"time"
+
+	"wacalls/internal/voip/core"
+	"wacalls/internal/voip/engine"
+	"wacalls/internal/voip/media"
+	"wacalls/internal/voip/transport"
 
 	waBinary "go.mau.fi/whatsmeow/binary"
 	"go.mau.fi/whatsmeow/types"
@@ -198,5 +206,103 @@ func TestRekeySkipsParticipantsWithoutPID(t *testing.T) {
 	}
 	if count != 1 {
 		t.Errorf("sent %d enc_rekey stanzas, want only the one device with a PID", count)
+	}
+}
+
+// Sem SRTP nada do caminho de grupo roda: as chaves por participante, a chave de
+// envio e o allocate estao todos atras desse gate. Numa chamada de grupo ele nao
+// pode vir do handshake 1:1, porque nao ha chave de chamada.
+func TestGroupCallBuildsItsOwnSrtpFromTheEpoch(t *testing.T) {
+	sock := &encryptingSock{}
+	sock.ownLID = lidJID("999")
+	m := NewCallManager(sock, slog.Default())
+	m.currentCall = &CallInfo{CallID: "CALL1", PeerJid: "peer:0@lid"}
+	m.relay = &fakeRelay{}
+	if m.srtp != nil {
+		t.Fatal("precondition: a fresh call has no SRTP yet")
+	}
+
+	m.HandleControl(context.Background(), controlNode(rosterWithRekey(25)))
+
+	if m.srtp == nil {
+		t.Fatal("a group call must build its SRTP from the epoch, since it has no call key")
+	}
+	// E o audio de um participante tem de autenticar por ele.
+	deviceJID := types.JID{User: "111", Server: types.HiddenUserServer}.String()
+	state := m.GroupState()
+	sendKM, err := media.DerivePerJidSrtpKey(state.Epoch, ensureDeviceJid(deviceJID))
+	if err != nil {
+		t.Fatalf("DerivePerJidSrtpKey: %v", err)
+	}
+	sender := engine.NewSrtpManager(sendKM, km(99), core.SRTPSendAuthTagLen, core.SRTPRecvAuthTagLen)
+	pkt := &media.RtpPacket{
+		Header: media.NewRtpHeader(core.PayloadTypeWhatsAppOpus, 1, 0,
+			media.GenerateSecureSsrc("CALL1", ensureDeviceJid(deviceJID), core.SsrcCounterAudio)),
+		Payload: []byte{0x01},
+	}
+	wire, _ := sender.Protect(pkt)
+	if _, err := m.srtp.Unprotect(wire); err != nil {
+		t.Fatalf("participant audio must authenticate once the group SRTP exists: %v", err)
+	}
+}
+
+// O <relay> do roster de grupo e por onde a midia passa. Sem converte-lo em
+// endpoints o transporte nunca conecta, e a chamada fica sem caminho de audio.
+func TestGroupRosterRelayBecomesEndpoints(t *testing.T) {
+	sock := &encryptingSock{}
+	sock.ownLID = lidJID("999")
+	m := NewCallManager(sock, slog.Default())
+	m.currentCall = &CallInfo{CallID: "CALL1", PeerJid: "peer:0@lid"}
+	var mu sync.Mutex
+	var configured [][]transport.RelayConfig
+	m.relay = &fakeRelay{onConfigure: func(r []transport.RelayConfig) {
+		mu.Lock()
+		configured = append(configured, r)
+		mu.Unlock()
+	}}
+
+	// O <relay> e irmao do <group_info>, nao filho dele.
+	node := rosterWithRekey(25)
+	children := node.GetChildren()
+	children = append(children, waBinary.Node{
+		Tag: "relay",
+		Attrs: waBinary.Attrs{
+			"uuid": "R1", "participant_uuid": "P1", "self_pid": "2", "transaction-id": "25",
+		},
+		Content: []waBinary.Node{
+			{Tag: "key", Content: []byte("relaykey")},
+			{Tag: "hbh_key", Content: []byte("hbhkey")},
+			{Tag: "token", Attrs: waBinary.Attrs{"id": "0"}, Content: []byte("tok0")},
+			{
+				Tag: "te2",
+				Attrs: waBinary.Attrs{
+					"relay_name": "sao1", "relay_id": "5", "token_id": "0", "c2r_rtt": "23",
+				},
+				Content: []byte{192, 168, 1, 10, 0x0d, 0x98},
+			},
+		},
+	})
+	node.Content = children
+	m.HandleControl(context.Background(), controlNode(node))
+
+	// A conexao roda fora do handler para nao segurar o loop de eventos.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		mu.Lock()
+		n := len(configured)
+		mu.Unlock()
+		if n > 0 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(configured) == 0 {
+		t.Fatal("the group relay must be turned into transport endpoints")
+	}
+	last := configured[len(configured)-1]
+	if len(last) == 0 {
+		t.Fatal("expected at least one relay config")
 	}
 }

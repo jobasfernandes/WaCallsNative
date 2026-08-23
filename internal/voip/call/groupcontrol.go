@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"wacalls/internal/voip/core"
+	"wacalls/internal/voip/engine"
 	"wacalls/internal/voip/media"
 	"wacalls/internal/voip/signaling"
 	"wacalls/internal/voip/transport"
@@ -99,8 +100,10 @@ func (m *CallManager) applyGroupUpdate(ctx context.Context, action *waBinary.Nod
 	}
 	m.group.Roster = update
 	m.group.TransactionID = update.TransactionID
-	m.syncGroupRecvKeysLocked()
+	m.connectGroupRelayLocked(update)
 	m.distributeGroupEpochLocked(ctx, update)
+	m.ensureGroupSrtpLocked()
+	m.syncGroupRecvKeysLocked()
 	m.log.Info("group roster applied",
 		"call_id", update.CallID,
 		"transaction_id", update.TransactionID,
@@ -110,6 +113,8 @@ func (m *CallManager) applyGroupUpdate(ctx context.Context, action *waBinary.Nod
 		// other participants can see us at all.
 		"self_in_roster", m.selfInRosterLocked(update),
 		"rekey_requested", update.RekeyRequested,
+		// Whether the roster carries the relay decides if media has anywhere to go.
+		"has_relay", update.Relay != nil,
 		"roster", describeRosterLocked(update))
 }
 
@@ -471,6 +476,7 @@ func (m *CallManager) distributeGroupEpochLocked(ctx context.Context, update *si
 	m.group.Epoch = append([]byte(nil), epoch...)
 	m.group.epochTransactionID = update.TransactionID
 	clear(epoch)
+	m.ensureGroupSrtpLocked()
 	m.log.Info("group epoch distributed",
 		"call_id", update.CallID, "transaction_id", update.TransactionID,
 		"recipients", len(recipients), "sent", sent)
@@ -501,4 +507,112 @@ func (m *CallManager) rekeyRecipientsLocked(update *signaling.GroupCallUpdate) [
 		}
 	}
 	return out
+}
+
+// ensureGroupSrtpLocked builds the SRTP session a group call needs. The 1:1 setup
+// keys off the per-call key, which a group call does not have: its media keys off
+// the shared epoch. Without this every later step stays blocked, because they all
+// require an SRTP session to exist. Caller holds m.mu.
+func (m *CallManager) ensureGroupSrtpLocked() {
+	if m.srtp != nil || m.group == nil || len(m.group.Epoch) == 0 {
+		return
+	}
+	call := m.currentCall
+	if call == nil {
+		return
+	}
+	ourDeviceJid := m.ourDeviceJidLocked()
+	if ourDeviceJid == "" {
+		return
+	}
+	sendKM, err := media.DerivePerJidSrtpKey(m.group.Epoch, ourDeviceJid)
+	if err != nil {
+		m.log.Error("group SRTP key derivation failed", "call_id", call.CallID, "err", err)
+		return
+	}
+	// The receive side has no single key in a group call: every participant gets
+	// its own through SetRecvKeyForSSRC. This one is only the fallback for a
+	// sender we were never told about, and it must not authenticate anything.
+	m.srtp = engine.NewSrtpManager(sendKM, core.SrtpKeyingMaterial{}, core.SRTPSendAuthTagLen, core.SRTPRecvAuthTagLen)
+	m.srtp.SetObserver(m.observer)
+	m.groupSendKeySet = true
+	m.log.Info("group SRTP session created", "call_id", call.CallID, "device", ourDeviceJid)
+	m.ensureExtensionsAttachedLocked(ourDeviceJid, "")
+}
+
+// connectGroupRelayLocked turns the <relay> block the roster carries into
+// transport endpoints. It is where a group call's media travels; without it the
+// call has a roster, keys, and nowhere to send audio. Caller holds m.mu.
+func (m *CallManager) connectGroupRelayLocked(update *signaling.GroupCallUpdate) {
+	if update.Relay == nil || len(update.Relay.Endpoints) == 0 || m.relay == nil {
+		return
+	}
+	call := m.currentCall
+	if call == nil {
+		return
+	}
+	relayData := groupRelayToCore(update.Relay)
+	if len(relayData.Endpoints) == 0 {
+		return
+	}
+	// Only reconnect when the endpoint set actually changed: the roster is resent
+	// often, and redialing on every snapshot would tear down live media.
+	if call.RelayData != nil && sameRelayEndpoints(call.RelayData.Endpoints, relayData.Endpoints) {
+		return
+	}
+	call.RelayData = relayData
+	m.log.Info("group relay endpoints applied",
+		"call_id", call.CallID, "endpoints", len(relayData.Endpoints),
+		"self_pid", update.Relay.SelfPID)
+	endpoints := relayData.Endpoints
+	go m.connectRelays(endpoints)
+}
+
+func groupRelayToCore(relay *signaling.GroupCallRelay) *core.RelayData {
+	out := &core.RelayData{
+		UUID:   relay.UUID,
+		HbhKey: relay.HBHKey,
+	}
+	if relay.HasSelfPID {
+		pid := int(relay.SelfPID)
+		out.SelfPid = &pid
+	}
+	for _, endpoint := range relay.Endpoints {
+		if endpoint.IPv4 == "" || endpoint.Port == 0 {
+			continue
+		}
+		converted := core.RelayEndpoint{
+			IP: endpoint.IPv4, Port: int(endpoint.Port),
+			RelayName: endpoint.RelayName, RelayID: int(endpoint.RelayID),
+			Key: string(relay.Key), IsFNA: endpoint.IsFNA,
+			AddressBytes: endpoint.Address,
+		}
+		// Tokens are addressed by index from the endpoint, not by position.
+		if idx := int(endpoint.TokenID); idx < len(relay.Tokens) && relay.Tokens[idx] != nil {
+			converted.RawToken = relay.Tokens[idx]
+			converted.Token = string(relay.Tokens[idx])
+		}
+		if idx := int(endpoint.AuthTokenID); idx < len(relay.AuthTokens) && relay.AuthTokens[idx] != nil {
+			converted.RawAuthToken = relay.AuthTokens[idx]
+			converted.AuthToken = string(relay.AuthTokens[idx])
+		}
+		if endpoint.RTT != 0 {
+			rtt := int(endpoint.RTT)
+			converted.C2RRtt = &rtt
+		}
+		out.Endpoints = append(out.Endpoints, converted)
+	}
+	return out
+}
+
+func sameRelayEndpoints(a, b []core.RelayEndpoint) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].IP != b[i].IP || a[i].Port != b[i].Port {
+			return false
+		}
+	}
+	return true
 }
