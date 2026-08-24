@@ -36,9 +36,10 @@ type Session struct {
 	client *whatsmeow.Client
 	calls  *call.Client
 
-	bridgeMu sync.Mutex
-	bridges  map[string]*Bridge
-	grace    *graceKeeper
+	bridgeMu   sync.Mutex
+	bridges    map[string]*Bridge
+	audioDrops map[string]bool
+	grace      *graceKeeper
 
 	// offlineReplaying is set while WhatsApp is replaying events buffered during downtime, so
 	// stale call offers from that window are dropped instead of surfacing as ghost ringing calls.
@@ -156,8 +157,15 @@ func (s *Session) wireCall(callID string, cm *call.CallManager) {
 		s.mgr.broker.EndCall(c.CallID, string(c.StateData.EndReason))
 	}
 	cm.OnPeerAudio = func(pcm16 []float32) {
-		if b := s.getBridge(callID); b != nil {
-			_ = b.WritePCM(pcm16)
+		b := s.getBridge(callID)
+		if b == nil {
+			// The decoded audio ends here when no bridge is attached for this
+			// call, which is indistinguishable from a call that produced none.
+			s.notePeerAudioDrop(callID, "no bridge attached", nil)
+			return
+		}
+		if err := b.WritePCM(pcm16); err != nil {
+			s.notePeerAudioDrop(callID, "bridge write failed", err)
 		}
 	}
 	cm.OnQuality = func(callID string, q core.CallQuality) {
@@ -434,4 +442,22 @@ func callNodeChildTags(node *waBinary.Node) []string {
 		tags[i] = c.Tag
 	}
 	return tags
+}
+
+// notePeerAudioDrop reports, once per call and reason, decoded audio that never
+// reached the listener.
+func (s *Session) notePeerAudioDrop(callID, reason string, err error) {
+	s.bridgeMu.Lock()
+	if s.audioDrops == nil {
+		s.audioDrops = map[string]bool{}
+	}
+	key := callID + "/" + reason
+	seen := s.audioDrops[key]
+	s.audioDrops[key] = true
+	s.bridgeMu.Unlock()
+	if seen {
+		return
+	}
+	s.log.Warn("decoded audio not delivered",
+		"call_id", callID, "reason", reason, "err", err)
 }

@@ -80,6 +80,8 @@ type CallManager struct {
 	seenInbound    map[uint64]bool
 	seenStun       map[string]bool
 	seenUnroutable map[string]bool
+	keyDumps       int
+	sawInboundRTCP bool
 	extAttached    bool
 
 	OnStateChange func(*CallInfo)

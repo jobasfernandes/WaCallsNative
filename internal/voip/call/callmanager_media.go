@@ -1,8 +1,12 @@
 package call
 
 import (
+	"encoding/hex"
 	"errors"
+	"fmt"
+	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -166,8 +170,15 @@ func (m *CallManager) onRelayData(data []byte) {
 	// falls off the end of this function unlogged, which is why no participant is
 	// ever heard.
 	if payload, wrapped, valid := transport.UnwrapGroupForwardingPacket(data); wrapped {
+		// A header without a payload is relay bookkeeping, not media.
+		if valid && len(payload) == 0 {
+			return
+		}
 		if !valid {
-			m.noteUnroutable("malformed forwarding header", len(data))
+			// The subtype is what names the header length, so it is the only thing
+			// that says whether this is a shape we do not know or a truncated one.
+			m.noteUnroutable(
+				fmt.Sprintf("malformed forwarding header subtype=%#02x", data[1]), len(data))
 			return
 		}
 		data = payload
@@ -179,6 +190,7 @@ func (m *CallManager) onRelayData(data []byte) {
 		return
 	}
 	if transport.IsRtcpPacket(data) {
+		m.noteInboundRTCP()
 		senderSsrc, _ := media.ParseRTCPSenderSSRC(data)
 		m.notePeerMedia(senderSsrc)
 
@@ -269,6 +281,7 @@ func (m *CallManager) onRelayData(data []byte) {
 			reason = string(se.Type)
 		}
 		obs.SrtpRecvDrop(reason)
+		m.dumpUnauthenticated(data)
 		if m.srtpDrops.add(reason) {
 			m.log.Warn("srtp recv packet dropped", "reason", reason, "err", err)
 		} else {
@@ -403,4 +416,59 @@ func (m *CallManager) noteUnroutable(reason string, size int) {
 	m.seenUnroutable[reason] = true
 	m.extMu.Unlock()
 	m.log.Warn("relay packet not routable", "reason", reason, "bytes", size)
+}
+
+// keyDumpLimit bounds how many failing packets a single call reports.
+const keyDumpLimit = 3
+
+// dumpUnauthenticated records, under WACALLS_DUMP_KEYS, the group epoch and the
+// first packets that failed to authenticate with it. Whether the receive key is
+// derived from the right identity cannot be settled from the outside: the same
+// symptom fits a wrong epoch, a wrong participant id and a wrong tag length, and
+// only replaying the real bytes against each candidate separates them.
+//
+// It stays behind an env var because it prints key material.
+func (m *CallManager) dumpUnauthenticated(data []byte) {
+	if os.Getenv("WACALLS_DUMP_KEYS") == "" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.keyDumps >= keyDumpLimit || m.group == nil || len(m.group.Epoch) == 0 {
+		return
+	}
+	m.keyDumps++
+	call := m.currentCall
+	callID := ""
+	if call != nil {
+		callID = call.CallID
+	}
+	var devices []string
+	if m.group.Roster != nil {
+		for _, participant := range m.group.Roster.Participants {
+			for _, device := range participant.Devices {
+				if !device.JID.IsEmpty() {
+					devices = append(devices, device.JID.String())
+				}
+			}
+		}
+	}
+	m.log.Warn("unauthenticated packet dump",
+		"call_id", callID,
+		"epoch", hex.EncodeToString(m.group.Epoch),
+		"packet", hex.EncodeToString(data),
+		"roster_devices", strings.Join(devices, ","))
+}
+
+// noteInboundRTCP announces the first control packet of a call. Without inbound
+// RTCP there is no round-trip or loss to report, and the quality panel stays on
+// "measuring" for as long as the call lasts.
+func (m *CallManager) noteInboundRTCP() {
+	m.extMu.Lock()
+	first := !m.sawInboundRTCP
+	m.sawInboundRTCP = true
+	m.extMu.Unlock()
+	if first {
+		m.log.Info("first inbound rtcp seen", "call_id", m.callIDForLog())
+	}
 }
