@@ -75,8 +75,9 @@ func TestUnwrapGroupForwardingPacketRejectsMalformed(t *testing.T) {
 		packet []byte
 	}{
 		{"marker only", []byte{0x09}},
-		{"unknown subtype", []byte{0x09, 0x03, 0x00, 0x00}},
-		{"truncated before inner RTP", []byte{0x09, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00}},
+		{"shorter than its own header", []byte{0x09, 0x03, 0x00, 0x00}},
+		{"one byte short of the header", []byte{0x09, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00}},
+		{"header plus a single byte", []byte{0x09, 0x02, 0, 0, 0, 0, 0, 0, 0x80}},
 		{"inner is not RTP version 2", append([]byte{0x09, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
 			[]byte{0x00, 0x78, 0x00, 0x01, 0x00, 0x03, 0x31, 0x80, 0x8c, 0xd4, 0x81, 0xd5}...)},
 	}
@@ -98,5 +99,46 @@ func TestUnwrapGroupForwardingPacketEmpty(t *testing.T) {
 	got, wrapped, valid := UnwrapGroupForwardingPacket(nil)
 	if wrapped || !valid || got != nil {
 		t.Fatalf("nil input: got %v, wrapped=%v, valid=%v; want nil, false, true", got, wrapped, valid)
+	}
+}
+
+// O tamanho do header cresce com o subtipo, e a captura confirma a progressao em
+// todos os pacotes que o relay entrega. Uma tabela com tres entradas fixas
+// rejeita os demais subtipos, e com eles vai o RTCP: sem relatorio de recepcao a
+// chamada nunca reporta latencia nem perda.
+func TestForwardingHeaderLengthFollowsTheSubtype(t *testing.T) {
+	for _, tc := range []struct {
+		subtype byte
+		header  int
+	}{{2, 8}, {3, 10}, {4, 12}, {5, 14}, {6, 16}, {7, 18}, {8, 20}} {
+		payload := make([]byte, 16)
+		payload[0] = 0x80 // RTP version 2
+		packet := append(append([]byte{0x09, tc.subtype}, make([]byte, tc.header-2)...), payload...)
+		got, wrapped, valid := UnwrapGroupForwardingPacket(packet)
+		if !wrapped || !valid {
+			t.Errorf("subtype %#02x: wrapped=%v valid=%v, want a %d byte header",
+				tc.subtype, wrapped, valid, tc.header)
+			continue
+		}
+		if len(got) != len(payload) {
+			t.Errorf("subtype %#02x: payload = %d bytes, want %d",
+				tc.subtype, len(got), len(payload))
+		}
+	}
+}
+
+// Alguns subtipos chegam so com o header e nenhum conteudo. Nao sao midia nem
+// erro: tratar como malformado enche o log de avisos por trafego normal.
+func TestHeaderOnlyForwardingPacketIsNotAnError(t *testing.T) {
+	for _, subtype := range []byte{3, 5, 6} {
+		header := 2*int(subtype) + 4
+		packet := append([]byte{0x09, subtype}, make([]byte, header-2)...)
+		payload, wrapped, valid := UnwrapGroupForwardingPacket(packet)
+		if !wrapped || !valid {
+			t.Errorf("subtype %#02x: header-only packet reported invalid", subtype)
+		}
+		if len(payload) != 0 {
+			t.Errorf("subtype %#02x: payload = %d bytes, want none", subtype, len(payload))
+		}
 	}
 }
