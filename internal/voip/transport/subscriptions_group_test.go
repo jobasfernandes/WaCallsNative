@@ -170,7 +170,8 @@ func TestNormalizeParticipantPIDs(t *testing.T) {
 		want []uint32
 	}{
 		{"sorted and deduplicated", []uint32{2, 1, 2}, []uint32{1, 2}},
-		{"zero dropped: it is the local participant", []uint32{0, 1}, []uint32{1}},
+		// PID zero e um participante real: na captura ele e o peer original.
+		{"zero is a real participant", []uint32{0, 1}, []uint32{0, 1}},
 		{"empty stays empty", nil, nil},
 	}
 	for _, tc := range cases {

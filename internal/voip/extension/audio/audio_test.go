@@ -97,3 +97,48 @@ func TestAudioFeedPCMBounds(t *testing.T) {
 		t.Fatalf("captureBuf=%d exceeds bound %d", len(a.captureBuf), codec.FrameSize()*4)
 	}
 }
+
+// O audio de grupo chega sob o payload type 121 e com um byte a mais na frente
+// do TOC. Lido sem descontar esse byte, todo frame se parece com um TOC zerado:
+// inativo, e portanto silenciado. A chamada inteira vira silencio.
+func TestGroupAudioSkipsTheLeadingPayloadByte(t *testing.T) {
+	// TOC 0x50: ativo, 16 kHz, 60 ms.
+	const toc = byte(0x50)
+	rec := &recordingCodec{}
+	a := New(rec)
+
+	a.handleInbound(&media.RtpPacket{
+		Header:  media.NewRtpHeader(core.PayloadTypeWhatsAppOpusAlt, 1, 0, 7),
+		Payload: []byte{0x00, toc, 0xAA, 0xBB},
+	})
+	if len(rec.frames) == 0 {
+		t.Fatal("o frame nao chegou ao decoder")
+	}
+	if got := rec.frames[0][0]; got != toc {
+		t.Errorf("primeiro byte entregue ao codec = %#02x, want o TOC %#02x", got, toc)
+	}
+
+	// Numa chamada 1:1 o payload comeca no proprio TOC: nada a descontar.
+	rec.frames = nil
+	a.handleInbound(&media.RtpPacket{
+		Header:  media.NewRtpHeader(core.PayloadTypeWhatsAppOpus, 2, 960, 7),
+		Payload: []byte{toc, 0xAA, 0xBB},
+	})
+	if len(rec.frames) == 0 {
+		t.Fatal("o frame 1:1 nao chegou ao decoder")
+	}
+	if got := rec.frames[0][0]; got != toc {
+		t.Errorf("1:1: primeiro byte = %#02x, want o TOC %#02x", got, toc)
+	}
+}
+
+type recordingCodec struct{ frames [][]byte }
+
+func (c *recordingCodec) Decode(f []byte) ([]float32, error) {
+	c.frames = append(c.frames, append([]byte(nil), f...))
+	return make([]float32, 960), nil
+}
+func (c *recordingCodec) Encode([]float32) ([]byte, error) { return nil, nil }
+func (c *recordingCodec) FrameSize() int                   { return 960 }
+func (c *recordingCodec) SampleRate() int                  { return 16000 }
+func (c *recordingCodec) Close()                           {}

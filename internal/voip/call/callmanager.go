@@ -69,12 +69,20 @@ type CallManager struct {
 
 	// group stays nil on a 1:1 call.
 	group *GroupState
+	// groupSendKeySet guards against re-keying the send side on every roster
+	// update, which would reset the outbound SRTP contexts mid-call.
+	groupSendKeySet bool
 
-	extensions   []engine.Extension
-	extMu        sync.Mutex
-	rtpHandlers  map[uint8]func(*media.RtpPacket)
-	declaredSelf map[uint32]bool
-	extAttached  bool
+	extensions     []engine.Extension
+	extMu          sync.Mutex
+	rtpHandlers    map[uint8]func(*media.RtpPacket)
+	declaredSelf   map[uint32]bool
+	seenInbound    map[uint64]bool
+	seenStun       map[string]bool
+	seenUnroutable map[string]bool
+	keyDumps       int
+	sawInboundRTCP bool
+	extAttached    bool
 
 	OnStateChange func(*CallInfo)
 	OnIncoming    func(*CallInfo)
@@ -197,7 +205,26 @@ func (m *CallManager) AcceptCall(ctx context.Context, callID string) error {
 	peer := wanode.MustJID(call.PeerJid)
 	creator := wanode.MustJID(call.CallCreator)
 	relayData := call.RelayData
+	isGroup := m.group != nil
 	m.mu.Unlock()
+
+	// A group call has no per-call key: the media keys off the shared epoch, and
+	// its accept carries no <enc>. Falling through to the 1:1 path here sends
+	// nothing at all, because that path is guarded on the key being present, and
+	// the caller's phone keeps ringing until it times out.
+	if isGroup {
+		accept, err := signaling.BuildActiveGroupAccept(callID, creator, signaling.GenerateCallStanzaID())
+		if err != nil {
+			m.log.Error("build group accept failed", "call_id", callID, "err", err)
+			return err
+		}
+		if err := m.sock.SendNode(ctx, accept); err != nil {
+			m.log.Error("group accept send error", "call_id", callID, "err", err)
+			return err
+		}
+		m.log.Info("group call accepted", "call_id", callID)
+		return nil
+	}
 
 	if key != nil {
 		acceptNode, err := signaling.BuildAcceptStanza(ctx, m.sock, callID, key, peer, creator)
@@ -282,7 +309,22 @@ func (m *CallManager) EndCall(ctx context.Context, reason core.EndCallReason) er
 	if m.acceptedByJid != "" {
 		termDest = m.acceptedByJid
 	}
-	node := signaling.BuildTerminateStanza(wanode.MustJID(termDest), call.CallID, wanode.MustJID(call.CallCreator))
+	var node waBinary.Node
+	if m.group != nil {
+		// A group terminate goes to the call service, like the rest of the group
+		// signaling. Addressed to a participant it reads as ending the call with
+		// that participant, and the device that invited us leaves along with us.
+		groupNode, err := signaling.BuildGroupTerminate(
+			call.CallID, wanode.MustJID(call.CallCreator), signaling.GenerateCallStanzaID())
+		if err != nil {
+			m.mu.Unlock()
+			return err
+		}
+		node = groupNode
+	} else {
+		node = signaling.BuildTerminateStanza(
+			wanode.MustJID(termDest), call.CallID, wanode.MustJID(call.CallCreator))
+	}
 	ended := call
 	m.emitState()
 	m.mu.Unlock()

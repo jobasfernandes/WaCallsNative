@@ -8,6 +8,7 @@ import (
 	"wacalls/internal/voip/core"
 	"wacalls/internal/voip/engine"
 	"wacalls/internal/voip/media"
+	"wacalls/internal/voip/transport"
 
 	waBinary "go.mau.fi/whatsmeow/binary"
 	"go.mau.fi/whatsmeow/types"
@@ -187,4 +188,75 @@ func TestGroupKeysUntouchedOnDirectCall(t *testing.T) {
 	if _, err := m.srtp.Unprotect(wire); err != nil {
 		t.Fatalf("the 1:1 receive path must keep working: %v", err)
 	}
+}
+
+// O reenvio do allocate e disparado pela mudanca do conjunto de PIDs, nao por um
+// transaction id de relay: um participante que entra sem o relay bumpar esse id
+// ficaria com subscription velha e nunca teria a midia assinada.
+func TestGroupAllocateResendsOnPIDChange(t *testing.T) {
+	sock := &recordingSock{epoch: testEpoch(), ownLID: lidJID("999")}
+	m := groupKeysCM(t, sock)
+	var configs []transport.GroupAllocateConfig
+	m.relay = &fakeRelay{onGroupAllocate: func(cfg transport.GroupAllocateConfig) bool {
+		configs = append(configs, cfg)
+		// Espelha a semantica real: muda quando o conjunto de PIDs muda.
+		if len(configs) == 1 {
+			return true
+		}
+		prev := configs[len(configs)-2].PIDs
+		return len(prev) != len(cfg.PIDs)
+	}}
+	ctx := context.Background()
+
+	m.HandleControl(ctx, controlNode(groupUpdateNode(7, userNode("111"))))
+	m.HandleControl(ctx, controlNode(encRekeyNode(7)))
+	if len(configs) == 0 {
+		t.Fatal("the relay must be told the group shape once roster and epoch are in")
+	}
+	first := len(configs[0].PIDs)
+
+	// Um participante a mais tem de produzir um conjunto de PIDs maior.
+	m.HandleControl(ctx, controlNode(groupUpdateNode(8, userNode("111"), userNode("222"))))
+	last := configs[len(configs)-1]
+	if len(last.PIDs) <= first {
+		t.Errorf("PIDs = %v, want more than the %d before the join", last.PIDs, first)
+	}
+	// Os nove SSRCs de stream nao podem colidir com o de app-data.
+	for i, ssrc := range last.Streams {
+		if ssrc == last.AppDataSSRC {
+			t.Errorf("stream slot %d collides with the app-data SSRC", i)
+		}
+	}
+}
+
+// A chave de envio passa a vir da epoch: sem isso ninguem decodifica o nosso audio.
+func TestGroupSendKeyComesFromTheEpoch(t *testing.T) {
+	sock := &recordingSock{epoch: testEpoch(), ownLID: lidJID("999")}
+	m := groupKeysCM(t, sock)
+	m.relay = &fakeRelay{}
+	ctx := context.Background()
+	m.HandleControl(ctx, controlNode(groupUpdateNode(7, userNode("111"))))
+	m.HandleControl(ctx, controlNode(encRekeyNode(7)))
+
+	pkt := &media.RtpPacket{
+		Header:  media.NewRtpHeader(core.PayloadTypeWhatsAppOpus, 1, 0, 1234),
+		Payload: []byte{0x01, 0x02},
+	}
+	wire, err := m.srtp.Protect(pkt)
+	if err != nil {
+		t.Fatalf("Protect: %v", err)
+	}
+	ourDeviceJID := ensureDeviceJid(m.ownCredJid())
+	expected, err := media.DerivePerJidSrtpKey(testEpoch(), ourDeviceJID)
+	if err != nil {
+		t.Fatalf("DerivePerJidSrtpKey: %v", err)
+	}
+	receiver := engine.NewSrtpManager(km(50), expected, core.SRTPRecvAuthTagLen, core.SRTPSendAuthTagLen)
+	if _, err := receiver.Unprotect(wire); err != nil {
+		t.Fatalf("a participant holding the epoch key must decode our audio: %v", err)
+	}
+}
+
+func lidJID(user string) types.JID {
+	return types.JID{User: user, Server: types.HiddenUserServer}
 }

@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"log/slog"
 	"math"
+	"sync"
 	"testing"
 
 	"wacalls/internal/voip/codec/mlow"
@@ -53,10 +54,21 @@ func (fakeSock) ResolveLIDForPN(ctx context.Context, pn types.JID) types.JID {
 }
 
 type fakeRelay struct {
-	onData      func([]byte)
-	onConfigure func([]transport.RelayConfig)
-	onDrop      func()
-	noConn      bool
+	onData          func([]byte)
+	onConfigure     func([]transport.RelayConfig)
+	onDrop          func()
+	noConn          bool
+	onGroupAllocate func(transport.GroupAllocateConfig) bool
+
+	groupMu   sync.Mutex
+	ssrc      uint32
+	lastGroup *transport.GroupAllocateConfig
+}
+
+func (r *fakeRelay) groupConfig() *transport.GroupAllocateConfig {
+	r.groupMu.Lock()
+	defer r.groupMu.Unlock()
+	return r.lastGroup
 }
 
 var _ RelayTransport = (*fakeRelay)(nil)
@@ -66,14 +78,33 @@ func (r *fakeRelay) Broadcast(data []byte) {
 		r.onData(data)
 	}
 }
-func (r *fakeRelay) HasConnection() bool               { return !r.noConn }
-func (r *fakeRelay) SetSsrc(uint32)                    {}
+func (r *fakeRelay) HasConnection() bool { return !r.noConn }
+func (r *fakeRelay) SetSsrc(ssrc uint32) {
+	r.groupMu.Lock()
+	r.ssrc = ssrc
+	r.groupMu.Unlock()
+}
+
+func (r *fakeRelay) sentSsrc() uint32 {
+	r.groupMu.Lock()
+	defer r.groupMu.Unlock()
+	return r.ssrc
+}
 func (r *fakeRelay) SetSubscriptionSsrc(uint32)        {}
 func (r *fakeRelay) SetStreamSsrcs([]uint32, []uint32) {}
-func (r *fakeRelay) SetOnConnected(func(string, int))  {}
-func (r *fakeRelay) SetOnReceive(func([]byte))         {}
-func (r *fakeRelay) SetOnUsableChange(func(int))       {}
-func (r *fakeRelay) ResendSubscriptions()              {}
+func (r *fakeRelay) SetGroupAllocate(cfg transport.GroupAllocateConfig) bool {
+	r.groupMu.Lock()
+	r.lastGroup = &cfg
+	r.groupMu.Unlock()
+	if r.onGroupAllocate != nil {
+		return r.onGroupAllocate(cfg)
+	}
+	return false
+}
+func (r *fakeRelay) SetOnConnected(func(string, int)) {}
+func (r *fakeRelay) SetOnReceive(func([]byte))        {}
+func (r *fakeRelay) SetOnUsableChange(func(int))      {}
+func (r *fakeRelay) ResendSubscriptions()             {}
 func (r *fakeRelay) ConfigureRelays(relays []transport.RelayConfig) {
 	if r.onConfigure != nil {
 		r.onConfigure(relays)

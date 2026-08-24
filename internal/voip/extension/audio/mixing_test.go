@@ -2,6 +2,7 @@ package audio
 
 import (
 	"testing"
+	"time"
 
 	"wacalls/internal/voip/codec/mlow"
 	"wacalls/internal/voip/core"
@@ -186,5 +187,96 @@ func TestSecondSSRCWithoutFactoryIsDropped(t *testing.T) {
 	defer a.mu.Unlock()
 	if len(a.streams) != 1 {
 		t.Fatalf("streams = %d, want only the first without a decoder factory", len(a.streams))
+	}
+}
+
+// A saida tem de sair na taxa do relogio, e nao na taxa em que os pacotes
+// chegam. Com dois participantes, emitir um frame por pacote de cada stream
+// entrega o dobro do audio que cabe no tempo real: o buffer do player enche,
+// transborda e passa a descartar, o que se ouve como corte depois de alguns
+// segundos de conversa boa.
+func TestMixEmitsAtMostOneFramePerInterval(t *testing.T) {
+	a, codec := groupAudio(t)
+	defer a.Detach()
+
+	var emitted int
+	a.OnPeerPCM(func([]float32) { emitted++ })
+
+	frame := toneFrame(t, codec, 0.2)
+	// Dez instantes entregues pelos dois participantes.
+	for i := uint16(1); i <= 10; i++ {
+		a.handleInbound(pkt(10, i, frame))
+		a.handleInbound(pkt(20, i, frame))
+	}
+
+	// Vinte pacotes representam dez instantes de audio, nao vinte.
+	if emitted > 12 {
+		t.Errorf("emitiu %d frames para 10 instantes: a saida corre mais rapido que o tempo real",
+			emitted)
+	}
+}
+
+// A saida nao pode correr mais rapido que o tempo real. O player consome uma
+// taxa fixa de amostras por segundo: entregar mais que isso enche o buffer dele,
+// que passa a descartar o excedente no meio da fala. Com dois participantes e
+// DTX, os frames emitidos isoladamente somam mais audio do que cabe no relogio.
+func TestMixDoesNotOutrunRealTime(t *testing.T) {
+	a, codec := groupAudio(t)
+	defer a.Detach()
+
+	now := time.Unix(0, 0)
+	a.now = func() time.Time { return now }
+
+	var emitted int
+	a.OnPeerPCM(func([]float32) { emitted++ })
+
+	frame := toneFrame(t, codec, 0.2)
+	// Meio segundo de relogio: cabem oito frames de 60 ms.
+	for i := uint16(1); i <= 30; i++ {
+		a.handleInbound(pkt(10, i, frame))
+		a.handleInbound(pkt(20, i, frame))
+	}
+	now = now.Add(500 * time.Millisecond)
+	for i := uint16(31); i <= 60; i++ {
+		a.handleInbound(pkt(10, i, frame))
+		a.handleInbound(pkt(20, i, frame))
+	}
+
+	// Com folga para o preenchimento inicial, mas longe das dezenas de frames
+	// que sairiam sem limite nenhum.
+	if emitted > 18 {
+		t.Errorf("emitiu %d frames em 500 ms de relogio: a saida corre mais rapido que o tempo real",
+			emitted)
+	}
+	if emitted == 0 {
+		t.Error("a saida nao pode parar de emitir")
+	}
+}
+
+// Descartar o excedente resolve a taxa mas abre buracos: o audio sai na
+// quantidade certa e na hora errada, e o player seca nos intervalos maiores que
+// a reserva dele. O excedente tem de esperar sua vez, nao sumir.
+func TestSurplusIsHeldNotDropped(t *testing.T) {
+	a, codec := groupAudio(t)
+	defer a.Detach()
+
+	now := time.Unix(0, 0)
+	a.now = func() time.Time { return now }
+
+	var emitted int
+	a.OnPeerPCM(func([]float32) { emitted++ })
+
+	frame := toneFrame(t, codec, 0.2)
+	// Uma rajada bem alem do que o relogio comporta.
+	for i := uint16(1); i <= 40; i++ {
+		a.handleInbound(pkt(10, i, frame))
+	}
+	burst := emitted
+
+	// O relogio avanca: o que ficou retido tem de sair agora, e nao ter sumido.
+	now = now.Add(2 * time.Second)
+	a.handleInbound(pkt(10, 41, frame))
+	if emitted <= burst {
+		t.Error("o excedente retido nunca saiu: foi descartado em vez de esperar")
 	}
 }

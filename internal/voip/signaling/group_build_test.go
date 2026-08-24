@@ -353,3 +353,50 @@ func TestBuildGroupEncRekeyRejectsUnsupportedEncType(t *testing.T) {
 		t.Error("an unsupported encryption type must be rejected")
 	}
 }
+
+// Sem anunciar presenca e fluxo de midia o servidor rebaixa este device para
+// invited em cerca de vinte segundos, mesmo publicando audio o tempo todo.
+func TestPresenceStanzasGoToTheCallService(t *testing.T) {
+	creator := types.NewJID("5511999990000", types.DefaultUserServer)
+
+	hb, err := BuildCallHeartbeat("CALL1", creator, "REQ1")
+	if err != nil {
+		t.Fatalf("BuildCallHeartbeat: %v", err)
+	}
+	assertCallService(t, hb, "heartbeat")
+
+	flowing, err := BuildMediaFlowStat("CALL1", creator, "REQ2", 1, false)
+	if err != nil {
+		t.Fatalf("BuildMediaFlowStat: %v", err)
+	}
+	stat := assertCallService(t, flowing, "connect_stat")
+	if stat.Attrs["is_rtp_traffic_flowing"] != "1" || stat.Attrs["type"] != "media_flow_update" {
+		t.Errorf("flow update attrs = %v", stat.Attrs)
+	}
+
+	started, err := BuildMediaFlowStat("CALL1", creator, "REQ3", 1, true)
+	if err != nil {
+		t.Fatalf("BuildMediaFlowStat: %v", err)
+	}
+	stat = assertCallService(t, started, "connect_stat")
+	if stat.Attrs["rtp_traffic_started"] != "1" {
+		t.Errorf("started attrs = %v", stat.Attrs)
+	}
+
+	if _, err := BuildCallHeartbeat("", creator, "REQ1"); err == nil {
+		t.Error("an incomplete identity must be rejected")
+	}
+}
+
+func assertCallService(t *testing.T, node waBinary.Node, tag string) waBinary.Node {
+	t.Helper()
+	to, _ := node.Attrs["to"].(types.JID)
+	if to.Server != "call" {
+		t.Errorf("%s addressed to %s, want the call service", tag, to)
+	}
+	children := node.GetChildren()
+	if len(children) != 1 || children[0].Tag != tag {
+		t.Fatalf("expected a single <%s> child, got %v", tag, children)
+	}
+	return children[0]
+}

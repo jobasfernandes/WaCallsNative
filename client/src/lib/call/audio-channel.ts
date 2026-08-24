@@ -5,6 +5,7 @@ import {
   PCM_CHANNEL_LABEL,
   PLAYBACK_PROCESSOR_NAME,
   PLAYBACK_WORKLET_URL,
+  MAX_BUFFERED_BYTES,
   SAMPLE_RATE,
 } from "@/constants/audio";
 
@@ -28,7 +29,17 @@ export const setupAudioChannel = async (
   const micSource = ctx.createMediaStreamSource(micStream);
   const captureNode = new AudioWorkletNode(ctx, CAPTURE_PROCESSOR_NAME);
   captureNode.port.onmessage = (e: MessageEvent<Float32Array>) => {
-    if (dc.readyState === "open") dc.send(float32ToInt16LE(e.data));
+    if (dc.readyState !== "open") return;
+    // Enfileirar audio que nao cabe nao adianta: ele chegaria tarde demais para
+    // ser tocado. Pior, a fila cheia faz o send lancar, e como o canal e
+    // ordenado o congestionamento trava tambem o que vem na outra direcao.
+    if (dc.bufferedAmount > MAX_BUFFERED_BYTES) return;
+    try {
+      dc.send(float32ToInt16LE(e.data));
+    } catch {
+      // Uma excecao aqui derruba o handler de captura e o microfone para de
+      // subir de vez.
+    }
   };
   micSource.connect(captureNode);
   captureNode.connect(ctx.destination);

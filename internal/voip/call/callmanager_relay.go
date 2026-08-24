@@ -9,9 +9,11 @@ import (
 
 	"wacalls/internal/voip/core"
 	"wacalls/internal/voip/media"
+	"wacalls/internal/voip/signaling"
 	"wacalls/internal/voip/transport"
 	"wacalls/internal/voip/wanode"
 
+	waBinary "go.mau.fi/whatsmeow/binary"
 	"go.mau.fi/whatsmeow/types"
 )
 
@@ -19,6 +21,7 @@ type RelayTransport interface {
 	SetSsrc(ssrc uint32)
 	SetSubscriptionSsrc(ssrc uint32)
 	SetStreamSsrcs(selfSsrcs, peerSsrcs []uint32)
+	SetGroupAllocate(cfg transport.GroupAllocateConfig) bool
 	SetOnConnected(fn func(ip string, port int))
 	SetOnReceive(fn func(data []byte))
 	SetOnUsableChange(fn func(usable int))
@@ -43,6 +46,7 @@ func (m *CallManager) onRelayConnected(ip string, port int) {
 			m.emitState()
 			m.maybeStartRtcpTxLocked()
 			m.log.Info("relay connected → active", "call_id", call.CallID)
+			m.announcePresenceLocked()
 		}
 	}
 	callID, relayName, rttMs, hasRtt := "", "", 0, false
@@ -334,10 +338,54 @@ func (m *CallManager) cleanupMedia() {
 	m.extMu.Lock()
 	m.rtpHandlers = map[uint8]func(*media.RtpPacket){}
 	m.declaredSelf = map[uint32]bool{}
+	m.seenInbound = map[uint64]bool{}
+	m.seenStun = map[string]bool{}
+	m.seenUnroutable = map[string]bool{}
 	m.extMu.Unlock()
 
 	for _, e := range m.extensions {
 		e.Detach()
 	}
 	m.relay.Cleanup()
+}
+
+// announcePresenceLocked tells the server this device is present and its media
+// is flowing. Publishing audio is not enough on its own: a group call that never
+// announces it is taken for one whose media never started, and the server drops
+// this device back to invited about twenty seconds in.
+//
+// Caller holds m.mu.
+func (m *CallManager) announcePresenceLocked() {
+	call := m.currentCall
+	if call == nil || m.group == nil || call.CallCreator == "" {
+		return
+	}
+	callID, creator := call.CallID, wanode.MustJID(call.CallCreator)
+	transaction := m.group.TransactionID
+	build := []func() (waBinary.Node, error){
+		func() (waBinary.Node, error) {
+			return signaling.BuildCallHeartbeat(callID, creator, signaling.GenerateCallStanzaID())
+		},
+		func() (waBinary.Node, error) {
+			return signaling.BuildMediaFlowStat(
+				callID, creator, signaling.GenerateCallStanzaID(), transaction, false)
+		},
+		func() (waBinary.Node, error) {
+			return signaling.BuildMediaFlowStat(
+				callID, creator, signaling.GenerateCallStanzaID(), transaction, true)
+		},
+	}
+	var nodes []waBinary.Node
+	for _, f := range build {
+		node, err := f()
+		if err != nil {
+			m.log.Warn("presence stanza not built", "call_id", callID, "err", err)
+			return
+		}
+		nodes = append(nodes, node)
+	}
+	m.log.Info("announcing presence and media flow", "call_id", callID)
+	for _, node := range nodes {
+		m.sendSignaling(context.Background(), node)
+	}
 }

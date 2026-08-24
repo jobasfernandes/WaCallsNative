@@ -139,6 +139,34 @@ multi-participant as unproven**. One remote participant is the only configuratio
 with positive evidence. Budget time for capturing your own two-participant
 allocate before assuming the bug is in your own code.
 
+## The allocate a group call sends
+
+The 1:1 allocate is already a degenerate case of the group one: both carry the
+relay token in `0x4000` and the stream descriptors in `0x4024`, and a group call
+adds three attributes. The real subscriptions live in `0x4025` and `0x4021`, which
+a 1:1 call never sends.
+
+The attribute constants in `internal/voip/transport/stun.go` are named after the
+capture. They used to be named after the parameters that fed them, which read as
+if `0x4000` carried subscriptions; it carries the token.
+
+## Sending in a group call
+
+Outbound media is encrypted with a key derived from the **shared epoch**, not from
+the 1:1 call key. Without that switch nobody in the call can decode what we send,
+and the symptom is one-way audio that looks like a relay problem.
+
+The send key is installed once. Re-keying on every roster update would reset the
+outbound SRTP contexts mid-call.
+
+## When the allocate is resent
+
+**On a change of the participant set**, not on a relay transaction id. The
+reference implementation gates the resend on the relay's own transaction id, so a
+participant who joins without the relay bumping it keeps a stale subscription and
+their media is never forwarded. The trigger here is the thing that actually
+matters.
+
 ## Related
 
 - [call-reactions.md](./call-reactions.md) for the app-data stream, which shares

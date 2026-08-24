@@ -1,6 +1,7 @@
 package transport
 
 import (
+	"bytes"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -59,17 +60,19 @@ type RelayConfig struct {
 }
 
 type relayConnection struct {
-	state        atomic.Int32
-	degraded     atomic.Bool
-	pc           *webrtc.PeerConnection
-	channel      *webrtc.DataChannel
-	id           string
-	info         RelayConfig
-	localUfrag   string
-	keepalive    *time.Ticker
-	stopCh       chan struct{}
-	mem          int64
-	teardownOnce sync.Once
+	state           atomic.Int32
+	degraded        atomic.Bool
+	pc              *webrtc.PeerConnection
+	channel         *webrtc.DataChannel
+	id              string
+	info            RelayConfig
+	localUfrag      string
+	keepalive       *time.Ticker
+	stopCh          chan struct{}
+	mem             int64
+	teardownOnce    sync.Once
+	probeAnswered   bool
+	groupRegistered bool
 }
 
 func (c *relayConnection) getState() relayConnState  { return relayConnState(c.state.Load()) }
@@ -84,6 +87,9 @@ type SctpRelayManager struct {
 	subscriptionSsrc atomic.Uint32
 	streamSelfSsrcs  []uint32
 	streamPeerSsrcs  []uint32
+
+	// group is nil on a 1:1 call; when set, the allocate carries the group shape.
+	group *GroupAllocateConfig
 
 	onConnected func(ip string, port int)
 
@@ -127,6 +133,73 @@ func (m *SctpRelayManager) SetStreamSsrcs(selfSsrcs, peerSsrcs []uint32) {
 	m.streamSelfSsrcs = append(m.streamSelfSsrcs[:0], selfSsrcs...)
 	m.streamPeerSsrcs = append(m.streamPeerSsrcs[:0], peerSsrcs...)
 	m.mu.Unlock()
+}
+
+// GroupAllocateConfig is what a group call adds to the allocate: the nine relay
+// stream SSRCs, the app-data SSRC, the connected remote participants, and the
+// hop-by-hop FEC pair.
+type GroupAllocateConfig struct {
+	Streams     [9]uint32
+	AppDataSSRC uint32
+	PIDs        []uint32
+	HBHFEC      [2]uint32
+	// The group roster reissues a token per relay and one shared key. They
+	// replace the 1:1 credentials in the allocate, addressed by relay name
+	// because that is what identifies the same relay across both blocks.
+	Tokens map[string][]byte
+	Key    []byte
+	// RelayName is the one relay the allocate belongs on. Sending it on every
+	// open relay makes each allocate supersede the last, leaving us listening
+	// where nobody publishes.
+	RelayName string
+}
+
+// tokenFor picks the group token that belongs to an open relay. Without a match
+// the caller keeps its 1:1 token, which the server accepts until the group
+// roster reissues one.
+func (c *GroupAllocateConfig) tokenFor(relayName string) []byte {
+	if c == nil || relayName == "" {
+		return nil
+	}
+	return c.Tokens[relayName]
+}
+
+// SetGroupAllocate switches the allocate into group shape, and reports whether
+// the participant set actually changed. The caller resends on true: a
+// participant that joined without a resend never gets their media subscribed.
+func (m *SctpRelayManager) SetGroupAllocate(cfg GroupAllocateConfig) bool {
+	normalized := NormalizeParticipantPIDs(cfg.PIDs)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	// A reissued token has to reach the relay too, not just a changed roster.
+	changed := m.group == nil || !equalPIDs(m.group.PIDs, normalized) ||
+		!equalTokens(m.group.Tokens, cfg.Tokens) || !bytes.Equal(m.group.Key, cfg.Key) ||
+		m.group.RelayName != cfg.RelayName
+	cfg.PIDs = normalized
+	m.group = &cfg
+	return changed
+}
+
+func equalPIDs(a, b []uint32) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func (m *SctpRelayManager) groupConfig() *GroupAllocateConfig {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.group == nil {
+		return nil
+	}
+	cfg := *m.group
+	return &cfg
 }
 
 func (m *SctpRelayManager) SetOnConnected(fn func(ip string, port int)) { m.onConnected = fn }
@@ -254,6 +327,9 @@ func (m *SctpRelayManager) connectToRelay(info RelayConfig) {
 	})
 	channel.OnClose(func() { m.closeConnection(id) })
 	channel.OnMessage(func(msg webrtc.DataChannelMessage) {
+		if m.answerRelayProbe(conn, msg.Data) {
+			return
+		}
 		if m.onReceive != nil {
 			m.onReceive(msg.Data)
 		}
@@ -346,6 +422,28 @@ func (m *SctpRelayManager) sendRegistration(conn *relayConnection) {
 	if conn.getState() != relayStateOpen || conn.channel == nil {
 		return
 	}
+	// A group call registers with a consent ping and the allocate, and with no
+	// binding request at all: a binding request puts the relay in ICE-consent
+	// mode, where it never bridges the participants' media to us.
+	if cfg := m.groupConfig(); cfg != nil {
+		if cfg.RelayName != "" && info.Name != cfg.RelayName {
+			return
+		}
+		packets := GroupRegistrationPackets(cfg, info)
+		if len(packets) == 0 {
+			return
+		}
+		for _, p := range packets {
+			m.sendRaw(conn, p)
+		}
+		if !conn.groupRegistered {
+			conn.groupRegistered = true
+			m.log.Info("group relay registration sent",
+				"relay", info.Name, "pids", cfg.PIDs,
+				"group_token", len(cfg.tokenFor(info.Name)) > 0)
+		}
+		return
+	}
 	ssrc := m.subscriptionSsrc.Load()
 	if ssrc == 0 {
 		ssrc = m.audioSsrc.Load()
@@ -416,7 +514,9 @@ func (m *SctpRelayManager) startKeepalive(conn *relayConnection) {
 				}
 				m.sendRaw(conn, BuildWhatsAppPing())
 				ticks++
-				if ticks%registrationRefreshTicks == 0 {
+				// The relay's consent goes stale in about a second, and a group
+				// call loses the bridge with it.
+				if m.groupConfig() != nil || ticks%registrationRefreshTicks == 0 {
 					m.sendRegistration(conn)
 				}
 			case <-conn.stopCh:
@@ -608,4 +708,40 @@ func (m *SctpRelayManager) Cleanup() {
 	for _, c := range conns {
 		m.teardown(c)
 	}
+}
+
+func equalTokens(a, b map[string][]byte) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for name, token := range a {
+		if !bytes.Equal(token, b[name]) {
+			return false
+		}
+	}
+	return true
+}
+
+// answerRelayProbe replies to the binding request the relay uses to check the
+// path before forwarding media. It must be answered on the connection it came
+// in on, and signed with that relay's key, so it is handled here rather than in
+// the call layer, which does not know which connection carried the packet.
+func (m *SctpRelayManager) answerRelayProbe(conn *relayConnection, data []byte) bool {
+	key := []byte(conn.info.Key)
+	if cfg := m.groupConfig(); cfg != nil && len(cfg.Key) > 0 {
+		key = cfg.Key
+	}
+	response, ok := BuildBindingSuccess(data, key)
+	if !ok {
+		return false
+	}
+	m.sendRaw(conn, response)
+	m.mu.Lock()
+	first := !conn.probeAnswered
+	conn.probeAnswered = true
+	m.mu.Unlock()
+	if first {
+		m.log.Info("relay path probe answered", "id", conn.id)
+	}
+	return true
 }

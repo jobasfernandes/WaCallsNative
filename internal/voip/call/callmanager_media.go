@@ -1,7 +1,12 @@
 package call
 
 import (
+	"encoding/hex"
 	"errors"
+	"fmt"
+	"os"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -160,10 +165,32 @@ func (m *CallManager) notePeerMediaLocked() {
 }
 
 func (m *CallManager) onRelayData(data []byte) {
+	// In multi-participant mode the relay prepends a forwarding header to the
+	// media it bridges. Left wrapped, the packet matches neither STUN nor RTP and
+	// falls off the end of this function unlogged, which is why no participant is
+	// ever heard.
+	if payload, wrapped, valid := transport.UnwrapGroupForwardingPacket(data); wrapped {
+		// A header without a payload is relay bookkeeping, not media.
+		if valid && len(payload) == 0 {
+			return
+		}
+		if !valid {
+			// The subtype is what names the header length, so it is the only thing
+			// that says whether this is a shape we do not know or a truncated one.
+			m.noteUnroutable(
+				fmt.Sprintf("malformed forwarding header subtype=%#02x", data[1]), len(data))
+			return
+		}
+		data = payload
+	}
 	if transport.IsStunPacket(data) {
+		// The relay answers the allocate here. Discarding it unread is why a
+		// refused subscription looks exactly like a relay that stays silent.
+		m.noteStunResponse(data)
 		return
 	}
 	if transport.IsRtcpPacket(data) {
+		m.noteInboundRTCP()
 		senderSsrc, _ := media.ParseRTCPSenderSSRC(data)
 		m.notePeerMedia(senderSsrc)
 
@@ -213,9 +240,11 @@ func (m *CallManager) onRelayData(data []byte) {
 		return
 	}
 	if !transport.IsRtpPacket(data) {
+		m.noteUnroutable("neither stun nor rtp", len(data))
 		return
 	}
 	if len(data) < 12 {
+		m.noteUnroutable("shorter than an rtp header", len(data))
 		return
 	}
 	pt := data[1] & 0x7f
@@ -236,6 +265,10 @@ func (m *CallManager) onRelayData(data []byte) {
 	skip := m.declaredSelf[ssrc]
 	handler := m.rtpHandlers[pt]
 	m.extMu.Unlock()
+	// Every inbound stream is announced once. Silence here is itself the finding:
+	// it separates "the relay forwards nothing" from "packets arrive and are
+	// dropped", which no other log distinguishes.
+	m.noteInboundStream(ssrc, pt, skip, srtp != nil, handler != nil)
 	if skip || srtp == nil || handler == nil {
 		return
 	}
@@ -248,6 +281,7 @@ func (m *CallManager) onRelayData(data []byte) {
 			reason = string(se.Type)
 		}
 		obs.SrtpRecvDrop(reason)
+		m.dumpUnauthenticated(data)
 		if m.srtpDrops.add(reason) {
 			m.log.Warn("srtp recv packet dropped", "reason", reason, "err", err)
 		} else {
@@ -260,9 +294,12 @@ func (m *CallManager) onRelayData(data []byte) {
 	}
 	// Subscription bootstrap only after the packet authenticated: RTP-shaped bytes
 	// with a spoofed SSRC must never redirect the peer subscription.
-	if pt == core.PayloadTypeWhatsAppOpus {
+	if core.IsWhatsAppAudioPayload(pt) {
 		m.mu.Lock()
-		if !m.actualPeerSet {
+		// A group call subscribes to every participant at once, and the roster is
+		// what says who they are. Latching onto the first stream that authenticates
+		// would drop every other participant's subscription.
+		if !m.actualPeerSet && m.group == nil {
 			m.actualPeerSet = true
 			if !containsSsrc(m.peerSsrcs, ssrc) {
 				m.peerSsrcs = []uint32{ssrc}
@@ -275,7 +312,7 @@ func (m *CallManager) onRelayData(data []byte) {
 	// Only the audio stream feeds the quality metrics: it is the one continuous
 	// stream, so jitter and loss mean something. Sporadic streams carry their own
 	// sequence and timestamp space and would read as huge loss.
-	if recvStats != nil && pt == core.PayloadTypeWhatsAppOpus {
+	if recvStats != nil && core.IsWhatsAppAudioPayload(pt) {
 		recvStats.NoteRTP(pkt.Header.SequenceNumber, pkt.Header.Timestamp, uint64(time.Now().UnixMilli()))
 	}
 	handler(pkt)
@@ -302,4 +339,136 @@ func (t *srtpDropTally) snapshotAndReset() map[string]int64 {
 	out := t.counts
 	t.counts = nil
 	return out
+}
+
+// noteInboundStream logs the first packet of every distinct inbound stream, with
+// whether this call can route it at all.
+func (m *CallManager) noteInboundStream(ssrc uint32, pt uint8, skip, hasSrtp, hasHandler bool) {
+	m.extMu.Lock()
+	if m.seenInbound == nil {
+		m.seenInbound = map[uint64]bool{}
+	}
+	stream := uint64(ssrc)<<8 | uint64(pt)
+	if m.seenInbound[stream] {
+		m.extMu.Unlock()
+		return
+	}
+	m.seenInbound[stream] = true
+	m.extMu.Unlock()
+
+	m.mu.Lock()
+	expected := containsSsrc(m.peerSsrcs, ssrc)
+	subscriptions := len(m.peerSsrcs)
+	callID := ""
+	if m.currentCall != nil {
+		callID = m.currentCall.CallID
+	}
+	m.mu.Unlock()
+	m.log.Info("inbound rtp stream seen",
+		"call_id", callID, "ssrc", ssrc, "payload_type", pt,
+		// expected=false means the SSRC we derived for this participant is not the
+		// one they actually send on, so no receive key was ever registered for it.
+		"expected", expected, "subscriptions", subscriptions,
+		"declared_self", skip, "has_srtp", hasSrtp, "has_handler", hasHandler)
+}
+
+// noteStunResponse logs the first relay answer of each distinct kind, so an
+// allocate the relay refuses is visible instead of silently dropped.
+func (m *CallManager) noteStunResponse(data []byte) {
+	info := transport.ParseStunResponse(data)
+	if info == nil || info.StunClass == "indication" {
+		return
+	}
+	kind := info.Method + "/" + info.StunClass + "/" + strconv.Itoa(info.ErrorCode)
+	m.extMu.Lock()
+	if m.seenStun == nil {
+		m.seenStun = map[string]bool{}
+	}
+	if m.seenStun[kind] {
+		m.extMu.Unlock()
+		return
+	}
+	m.seenStun[kind] = true
+	m.extMu.Unlock()
+
+	if info.IsError {
+		m.log.Warn("relay refused a stun request",
+			"method", info.Method, "error_code", info.ErrorCode,
+			"reason", info.ErrorReason)
+		return
+	}
+	m.log.Info("relay stun response",
+		"method", info.Method, "class", info.StunClass, "attributes", len(info.Attributes))
+}
+
+// noteUnroutable reports, once per reason, a packet the relay delivered that
+// this call could not classify. Dropping these unlogged hides a dead media path
+// behind a call that otherwise looks healthy.
+func (m *CallManager) noteUnroutable(reason string, size int) {
+	m.extMu.Lock()
+	if m.seenUnroutable == nil {
+		m.seenUnroutable = map[string]bool{}
+	}
+	if m.seenUnroutable[reason] {
+		m.extMu.Unlock()
+		return
+	}
+	m.seenUnroutable[reason] = true
+	m.extMu.Unlock()
+	m.log.Warn("relay packet not routable", "reason", reason, "bytes", size)
+}
+
+// keyDumpLimit bounds how many failing packets a single call reports.
+const keyDumpLimit = 3
+
+// dumpUnauthenticated records, under WACALLS_DUMP_KEYS, the group epoch and the
+// first packets that failed to authenticate with it. Whether the receive key is
+// derived from the right identity cannot be settled from the outside: the same
+// symptom fits a wrong epoch, a wrong participant id and a wrong tag length, and
+// only replaying the real bytes against each candidate separates them.
+//
+// It stays behind an env var because it prints key material.
+func (m *CallManager) dumpUnauthenticated(data []byte) {
+	if os.Getenv("WACALLS_DUMP_KEYS") == "" {
+		return
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.keyDumps >= keyDumpLimit || m.group == nil || len(m.group.Epoch) == 0 {
+		return
+	}
+	m.keyDumps++
+	call := m.currentCall
+	callID := ""
+	if call != nil {
+		callID = call.CallID
+	}
+	var devices []string
+	if m.group.Roster != nil {
+		for _, participant := range m.group.Roster.Participants {
+			for _, device := range participant.Devices {
+				if !device.JID.IsEmpty() {
+					devices = append(devices, device.JID.String())
+				}
+			}
+		}
+	}
+	m.log.Warn("unauthenticated packet dump",
+		"call_id", callID,
+		"epoch", hex.EncodeToString(m.group.Epoch),
+		"packet", hex.EncodeToString(data),
+		"roster_devices", strings.Join(devices, ","))
+}
+
+// noteInboundRTCP announces the first control packet of a call. Without inbound
+// RTCP there is no round-trip or loss to report, and the quality panel stays on
+// "measuring" for as long as the call lasts.
+func (m *CallManager) noteInboundRTCP() {
+	m.extMu.Lock()
+	first := !m.sawInboundRTCP
+	m.sawInboundRTCP = true
+	m.extMu.Unlock()
+	if first {
+		m.log.Info("first inbound rtcp seen", "call_id", m.callIDForLog())
+	}
 }

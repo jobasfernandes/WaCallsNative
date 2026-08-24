@@ -1,0 +1,12 @@
+tem um stanza de retry do relay
+
+[13:49, 17/07/2026] +55 85 9849-0991: Melhorias possiveis encontradas: jitter do keepalive
+[13:49, 17/07/2026] +55 85 9849-0991: bom dia
+[13:50, 17/07/2026] +55 85 9849-0991: Simulado de 400 calls simultaneas
+[13:51, 17/07/2026] +55 85 9849-0991: Problema: Gargalo de I/O e Context Switch: Com 400 conexões, o Runtime do Go e o seu código precisam gerenciar 400 rotinas (goroutines) que precisam disparar ações quase ao mesmo tempo.
+[13:51, 17/07/2026] +55 85 9849-0991: O Resultado: Se o keepalive deveria sair no milissegundo 60, mas ele espera 1 segundo na fila por causa da carga, o seu "jitter" explode de 23ms para 1s. O sistema perde a precisão temporal necessária para o VoIP.
+[13:51, 17/07/2026] +55 85 9849-0991: CPU (68% de 800%) e a RAM (444MB de 23GB)
+[13:51, 17/07/2026] +55 85 9849-0991: 444MB de ram para 400 calls simuladas!
+[13:51, 17/07/2026] +55 85 9849-0991: uso em torno de 4MB por conexao Whatsapp to WebRTC
+O benchmark real na VPS watinkhub (ADR-0003, docs/adr/0003-worker-call-capacity-benchmark.md) provou que o limite de chamadas concorrentes por worker NÃO é CPU/RAM (68% de 800% CPU, 444MB de 23GB em N=400) — é o jitter de scheduling do keepalive de silêncio: cada chamada ativa roda 1 goroutine + 1 time.Ticker de 60ms, e com N chamadas o atraso médio do tick degrada de 23ms (N=10) para 1.05s (N=400), com picos de 20s. Keepalive atrasado por segundos arrisca a Meta derrubar a chamada.
+quando 20 numeros atenderam começões a degradar
