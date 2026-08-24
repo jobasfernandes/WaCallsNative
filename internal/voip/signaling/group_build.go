@@ -237,3 +237,40 @@ func BuildGroupTerminate(callID string, callCreator types.JID, requestID string)
 	}
 	return callWrapWithID(callServiceJID(callID), requestID, action), nil
 }
+
+// BuildCallHeartbeat keeps this device counted as present in the call.
+func BuildCallHeartbeat(callID string, callCreator types.JID, requestID string) (waBinary.Node, error) {
+	if callID == "" || callCreator.IsEmpty() || requestID == "" {
+		return waBinary.Node{}, fmt.Errorf("signaling: build heartbeat: incomplete identity")
+	}
+	action := waBinary.Node{
+		Tag:   "heartbeat",
+		Attrs: waBinary.Attrs{"call-id": callID, "call-creator": callCreator},
+	}
+	return callWrapWithID(callServiceJID(callID), requestID, action), nil
+}
+
+// BuildMediaFlowStat tells the server that RTP is flowing for this device.
+//
+// Publishing media is not enough on its own: a device that never reports it is
+// taken for one whose media never started, and the server drops it back to
+// invited about twenty seconds in.
+func BuildMediaFlowStat(
+	callID string, callCreator types.JID, requestID string, transactionID uint32, started bool,
+) (waBinary.Node, error) {
+	if callID == "" || callCreator.IsEmpty() || requestID == "" {
+		return waBinary.Node{}, fmt.Errorf("signaling: build connect stat: incomplete identity")
+	}
+	attrs := waBinary.Attrs{
+		"call-id": callID, "call-creator": callCreator,
+		"transaction-id": strconv.FormatUint(uint64(transactionID), 10),
+	}
+	if started {
+		attrs["rtp_traffic_started"] = "1"
+	} else {
+		attrs["is_rtp_traffic_flowing"] = "1"
+		attrs["type"] = "media_flow_update"
+	}
+	return callWrapWithID(callServiceJID(callID), requestID,
+		waBinary.Node{Tag: "connect_stat", Attrs: attrs}), nil
+}
