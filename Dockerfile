@@ -13,7 +13,7 @@ RUN --mount=type=cache,target=/root/.npm npm ci
 COPY client/ ./
 RUN npm run build
 
-FROM golang:1.26-alpine AS libopusmlow
+FROM golang:1.26.6-alpine AS libopusmlow
 # opus_mlow (libopus 1.4 fork with SMPL/MLow) pinned by commit for reproducible
 # native-encoder builds. This whole stage is one cached layer keyed by the pin.
 ARG OPUS_MLOW_SHA=93e91a74c0a2af610d8313a85e2c811081a73f93
@@ -24,7 +24,7 @@ RUN apk add --no-cache git cmake samurai gcc musl-dev \
     && cmake --build build \
     && mkdir -p /opus/lib && cp build/libopus.a /opus/lib/ && cp -r include /opus/include
 
-FROM golang:1.26-alpine AS srcbase
+FROM golang:1.26.6-alpine AS srcbase
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN --mount=type=cache,target=/go/pkg/mod go mod download
