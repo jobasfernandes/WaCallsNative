@@ -36,6 +36,10 @@ type CallManager struct {
 	peerSsrcs     []uint32
 	actualPeerSet bool
 
+	emitMu       sync.Mutex
+	emitPending  []*CallInfo
+	emitDraining bool
+
 	firstPacketSent       bool
 	initialTransportSent  bool
 	outgoingPreacceptSent bool
@@ -131,10 +135,71 @@ func (m *CallManager) CurrentCall() *CallInfo {
 	return m.currentCall
 }
 
+// emitState queues the current call state for delivery. Every caller holds
+// m.mu, so the host callback must NOT run here: consumers do real work on it
+// (the reference server closes the WebRTC peer connection on the ended branch),
+// and running that under the manager lock serialises the whole call — or
+// deadlocks outright if the consumer calls back into the manager.
 func (m *CallManager) emitState() {
-	if m.OnStateChange != nil && m.currentCall != nil {
-		m.OnStateChange(m.currentCall)
+	if m.currentCall == nil {
+		return
 	}
+	m.queueEmit(emitSnapshot(m.currentCall))
+}
+
+func (m *CallManager) queueEmit(snap *CallInfo) {
+	m.emitMu.Lock()
+	m.emitPending = append(m.emitPending, snap)
+	if m.emitDraining {
+		m.emitMu.Unlock()
+		return
+	}
+	m.emitDraining = true
+	m.emitMu.Unlock()
+	go m.drainEmits()
+}
+
+// drainEmits delivers every queued snapshot to OnStateChange, in order, holding
+// no manager lock. Exactly one instance runs at a time — a goroutine per event
+// would be simpler but would reorder them, and the order is semantic: a
+// consumer must never see "connected" after "ended".
+func (m *CallManager) drainEmits() {
+	for {
+		m.emitMu.Lock()
+		if len(m.emitPending) == 0 {
+			m.emitDraining = false
+			m.emitMu.Unlock()
+			return
+		}
+		snap := m.emitPending[0]
+		m.emitPending[0] = nil
+		m.emitPending = m.emitPending[1:]
+		m.emitMu.Unlock()
+
+		if cb := m.OnStateChange; cb != nil {
+			cb(snap)
+		}
+	}
+}
+
+// emitSnapshot copies the call as the host will see it. The host now runs after
+// the lock is released, so handing it the live *CallInfo would let the manager
+// mutate the struct under the consumer's feet (and trip -race). The time
+// pointers in StateData are copied for the same reason.
+func emitSnapshot(c *CallInfo) *CallInfo {
+	snap := *c
+	snap.StateData.ConnectedAt = copyTimePtr(c.StateData.ConnectedAt)
+	snap.StateData.AcceptedAt = copyTimePtr(c.StateData.AcceptedAt)
+	snap.StateData.EndedAt = copyTimePtr(c.StateData.EndedAt)
+	return &snap
+}
+
+func copyTimePtr(t *time.Time) *time.Time {
+	if t == nil {
+		return nil
+	}
+	tt := *t
+	return &tt
 }
 
 func (m *CallManager) StartCall(ctx context.Context, callID string, peerJid types.JID) error {
