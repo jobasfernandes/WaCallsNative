@@ -168,8 +168,17 @@ func (m *CallManager) StartCall(ctx context.Context, callID string, peerJid type
 	if err != nil {
 		return err
 	}
-	ackNode, err := m.sock.Query(ctx, offer)
+	ackNode, wrote, err := querySendingOffer(ctx, m.sock, offer)
 	if err != nil {
+		// The offer may already be on the wire: the socket writes first and only
+		// then waits for the ack, so a dead context or a dropped connection
+		// surfaces here with the callee's phone already ringing. Returning the
+		// error alone would drop our side of a call the peer can still answer —
+		// a ghost ring nobody can hang up. Tear the leg down explicitly, on a
+		// context detached from the one that just died.
+		if wrote {
+			m.endAbandonedOffer(ctx, callID, err)
+		}
 		return err
 	}
 
@@ -399,3 +408,62 @@ func (m *CallManager) ownCredJid() string {
 type CallError struct{ Msg string }
 
 func (e *CallError) Error() string { return e.Msg }
+
+// offerWriteReporter is the optional capability a socket implements to tell
+// callers whether a node reached the wire. Sockets that do not implement it
+// fall back to the safe assumption below.
+type offerWriteReporter interface {
+	QueryReportingWrite(ctx context.Context, node waBinary.Node) (*waBinary.Node, bool, error)
+}
+
+// querySendingOffer sends a node that, once written, makes a remote device
+// ring. When the socket cannot report whether the write happened, an error is
+// treated as "it may have gone out": a spurious terminate is a stanza the
+// server drops, while a missing one leaves someone's phone ringing.
+func querySendingOffer(ctx context.Context, sock core.VoipSocket, node waBinary.Node) (*waBinary.Node, bool, error) {
+	if r, ok := sock.(offerWriteReporter); ok {
+		return r.QueryReportingWrite(ctx, node)
+	}
+	resp, err := sock.Query(ctx, node)
+	return resp, err != nil, err
+}
+
+// abandonedOfferTerminateTimeout bounds the best-effort teardown of an offer
+// whose originating context is already dead.
+const abandonedOfferTerminateTimeout = 5 * time.Second
+
+// endAbandonedOffer tears down a leg whose offer reached the wire but whose
+// origination failed afterwards. Best effort by design: the caller is already
+// returning the original error and must not be blocked or masked by this.
+func (m *CallManager) endAbandonedOffer(ctx context.Context, callID string, cause error) {
+	m.mu.Lock()
+	call := m.currentCall
+	if call == nil || call.CallID != callID || call.IsEnded() {
+		m.mu.Unlock()
+		m.log.Warn("abandoned offer not torn down: no matching live call",
+			"call_id", callID, "cause", cause)
+		return
+	}
+	_ = call.ApplyTransition(Transition{Type: TransitionTerminated, Reason: core.EndCallReasonFailed})
+	peer := wanode.MustJID(call.PeerJid)
+	creator := wanode.MustJID(call.CallCreator)
+	m.mu.Unlock()
+
+	m.log.Warn("origination failed after the offer reached the wire; terminating the leg",
+		"call_id", callID, "peer", call.PeerJid, "cause", cause)
+
+	if peer.IsEmpty() {
+		m.log.Error("cannot terminate abandoned offer: unparseable peer jid",
+			"call_id", callID, "peer", call.PeerJid)
+		return
+	}
+	node := signaling.BuildTerminateStanza(peer, callID, creator)
+	sendCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), abandonedOfferTerminateTimeout)
+	go func() {
+		defer cancel()
+		if _, err := m.sock.Query(sendCtx, node); err != nil {
+			m.log.Error("terminate for abandoned offer failed", "call_id", callID, "err", err)
+		}
+	}()
+	m.cleanupMedia()
+}
